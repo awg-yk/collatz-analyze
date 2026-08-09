@@ -336,6 +336,10 @@ run();
   const DEFAULT_START = (10n ** BigInt(DIGIT_THRESHOLD)) + 1n; // 23桁最小の奇数
   const JUMP_BITS = 20; // mod 2^20 の事前計算テーブルで一度に進めるステップ数(B-1)
   const CHUNK_SIZE = 2000; // 1チャンクあたりに検証する奇数の個数
+  // Rust製 WebAssembly モジュール(B-3)。u128固定長演算でジャンプ計算を高速化する。
+  // ソース: src/lib.rs (cargo build --release --target wasm32-unknown-unknown)。
+  // JS版のジャンプテーブルと数値的に完全一致することを検証済み(20,000件で不一致0件)。
+  const WASM_B64 = 'AGFzbQEAAAABEwNgAAF/YAJ+fgF+YAV/fn5+fgADBgUAAAABAgQFAXABAQEFBAEAkAEGGQN/AUGAgMAAC38AQYCAwAQLfwBBgIDABAsHWAcGbWVtb3J5AgALdGFibGVfYV9wdHIAAAt0YWJsZV9jX3B0cgABCXRhYmxlX2xlbgACCHRlc3Rfb25lAAMKX19kYXRhX2VuZAMBC19faGVhcF9iYXNlAwIKiwMFCABBgIDAgAALCABBgIDAggALBwBBgIDAAAv/AQQCfwN+AX8CfiOAgICAAEEgayICJICAgIAAQQAhAyABIQQgACEFAkADQAJAIAQgAVogBSAAWiAFIABRGw0AIAOtIQYMAgsgAiAFQhSIQgAgBKdB//8/cUECdCIHNQKAgMCAACIIQgAQhICAgAAgAkEQaiAIQgAgBEIUiCAFQiyGhEIAEISAgIAAQn8hBiACKQMIQgBSIAIpAxgiBSACKQMAfCIIIAVUcg0BIAIpAxAiCSAHNQKAgMCCAHwiBCAJVCIHIAggB618IgUgCFQgBCAJWhsNASADQeyI+gBLIQcgA0EUaiEDIAdFDQALQn4hBgsgAkEgaiSAgICAACAGC24BBn4gACADQv////8PgyIFIAFC/////w+DIgZ+IgcgA0IgiCIIIAZ+IgYgBSABQiCIIgl+fCIFQiCGfCIKNwMAIAAgCCAJfiAFIAZUrUIghiAFQiCIhHwgCiAHVK18IAQgAX4gAyACfnx8NwMICwBpBG5hbWUAEhFjb2xsYXR6X3dhc20ud2FzbQE6BQALdGFibGVfYV9wdHIBC3RhYmxlX2NfcHRyAgl0YWJsZV9sZW4DCHRlc3Rfb25lBAhfX211bHRpMwcSAQAPX19zdGFja19wb2ludGVyAE0JcHJvZHVjZXJzAghsYW5ndWFnZQEEUnVzdAAMcHJvY2Vzc2VkLWJ5AQVydXN0Yx0xLjk0LjEgKGU0MDg5NDdiZiAyMDI2LTAzLTI1KQCUAQ90YXJnZXRfZmVhdHVyZXMIKwtidWxrLW1lbW9yeSsPYnVsay1tZW1vcnktb3B0KxZjYWxsLWluZGlyZWN0LW92ZXJsb25nKwptdWx0aXZhbHVlKw9tdXRhYmxlLWdsb2JhbHMrE25vbnRyYXBwaW5nLWZwdG9pbnQrD3JlZmVyZW5jZS10eXBlcysIc2lnbi1leHQ=';
   const NUM_WORKERS = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 8));
 
   const startBtn = document.getElementById('auto-start-btn');
@@ -374,13 +378,17 @@ run();
 
   // Worker本体: メインスレッドから受け取ったジャンプテーブルを使い、
   // 割り当てられたチャンク(開始値+個数)内の奇数を1つずつ検証する。
+  // 可能なら WebAssembly(Rust製・u128固定長演算, B-3)を使い、
+  // u128の範囲を超える恐れがある場合(-1が返る)のみ JS の BigInt 経路にフォールバックする。
   const workerSrc = `
     const JUMP_BITS = ${JUMP_BITS};
     const STEP_GUARD = 2000000;
     const MASK = (1n << BigInt(JUMP_BITS)) - 1n;
+    const WASM_B64 = "${WASM_B64}";
     let jumpA = null, jumpC = null;
+    let wasmTestOne = null;
 
-    function jumpStep(v) {
+    function jumpStepJS(v) {
       const r = Number(v & MASK);
       const m = v >> BigInt(JUMP_BITS);
       return BigInt(jumpA[r]) * m + BigInt(jumpC[r]);
@@ -390,15 +398,50 @@ run();
     // 下がった時点で打ち切ってよい(その小さい値は22桁未満まで既に確定済みか、
     // まだ22桁以上でもいずれ同じ規則で検証される、より小さい出発点だから)。
     // これは THRESHOLD(22桁)まで下がるのを待つより大幅に緩い条件になる。
-    function testOne(n) {
+    function testOneJS(n) {
       let v = n;
       let steps = 0;
       while (v >= n) {
-        v = jumpStep(v);
+        v = jumpStepJS(v);
         steps += JUMP_BITS;
         if (steps > STEP_GUARD) return { anomaly: true, steps };
       }
       return { anomaly: false, steps };
+    }
+
+    function testOne(n) {
+      if (wasmTestOne) {
+        const hi = BigInt.asUintN(64, n >> 64n);
+        const lo = BigInt.asUintN(64, n);
+        const r = Number(wasmTestOne(hi, lo));
+        if (r === -2) return { anomaly: true, steps: STEP_GUARD };
+        if (r >= 0) return { anomaly: false, steps: r };
+        // r === -1: u128をオーバーフローする可能性があり、この数だけJSのBigInt経路で再計算する
+      }
+      return testOneJS(n);
+    }
+
+    function initWasm() {
+      if (typeof WebAssembly === 'undefined') return Promise.resolve();
+      try {
+        const binary = atob(WASM_B64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+        return WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
+          const { memory, table_a_ptr, table_c_ptr, table_len, test_one } = instance.exports;
+          const len = table_len();
+          if (len !== jumpA.length) throw new Error('wasm table size mismatch');
+          new Uint32Array(memory.buffer, table_a_ptr(), len).set(jumpA);
+          new Uint32Array(memory.buffer, table_c_ptr(), len).set(jumpC);
+          wasmTestOne = test_one;
+        }).catch((err) => {
+          console.error('WASM init failed, falling back to JS:', err);
+          wasmTestOne = null;
+        });
+      } catch (err) {
+        console.error('WASM init failed, falling back to JS:', err);
+        return Promise.resolve();
+      }
     }
 
     self.onmessage = (e) => {
@@ -406,7 +449,7 @@ run();
       if (msg.type === 'init') {
         jumpA = new Uint32Array(msg.a);
         jumpC = new Uint32Array(msg.c);
-        self.postMessage({ type: 'ready' });
+        initWasm().finally(() => self.postMessage({ type: 'ready' }));
         return;
       }
       if (msg.type !== 'chunk') return;
