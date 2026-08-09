@@ -51,14 +51,14 @@
     color: var(--muted);
     font-size: 0.9rem;
   }
-  input[type="number"] {
+  input[type="text"] {
     background: var(--bg);
     border: 1px solid var(--border);
     color: var(--text);
     padding: 8px 10px;
     border-radius: 6px;
     font-size: 1rem;
-    width: 160px;
+    width: 320px;
   }
   button {
     background: var(--accent);
@@ -133,8 +133,8 @@
 
   <div class="panel">
     <div class="input-row">
-      <label for="start-number">開始値 (正の整数):</label>
-      <input type="number" id="start-number" value="27" min="1" step="1">
+      <label for="start-number">開始値 (正の整数、50桁以上も可):</label>
+      <input type="text" inputmode="numeric" id="start-number" value="27" pattern="[0-9]*">
       <button id="run-btn">計算する</button>
     </div>
     <div id="error" class="error" style="display:none;"></div>
@@ -168,8 +168,8 @@
 <script>
 function collatzSequence(n) {
   const seq = [n];
-  while (n !== 1) {
-    n = (n % 2 === 0) ? n / 2 : 3 * n + 1;
+  while (n !== 1n) {
+    n = (n % 2n === 0n) ? n / 2n : 3n * n + 1n;
     seq.push(n);
     if (seq.length > 100000) break; // safety guard
   }
@@ -191,7 +191,8 @@ function drawChart(canvas, seq) {
   const plotW = w - padding.left - padding.right;
   const plotH = h - padding.top - padding.bottom;
 
-  const maxVal = Math.max(...seq);
+  const maxValBig = seq.reduce((a, b) => (b > a ? b : a), seq[0]);
+  const maxVal = Number(maxValBig);
   const maxStep = seq.length - 1;
 
   const xScale = (i) => padding.left + (plotW * i) / (maxStep || 1);
@@ -237,7 +238,7 @@ function drawChart(canvas, seq) {
   ctx.beginPath();
   seq.forEach((v, i) => {
     const x = xScale(i);
-    const y = yScale(v);
+    const y = yScale(Number(v));
     if (i === 0) ctx.moveTo(x, y);
     else ctx.lineTo(x, y);
   });
@@ -246,8 +247,8 @@ function drawChart(canvas, seq) {
 
 function renderTable(tbody, seq) {
   const rows = seq.map((v, i) => {
-    const parity = (v % 2 === 0) ? '偶数' : '奇数';
-    return `<tr><td>${i}</td><td>${v.toLocaleString()}</td><td>${parity}</td></tr>`;
+    const parity = (v % 2n === 0n) ? '偶数' : '奇数';
+    return `<tr><td>${i}</td><td>${v.toString()}</td><td>${parity}</td></tr>`;
   }).join('');
   tbody.innerHTML = rows;
 }
@@ -255,7 +256,7 @@ function renderTable(tbody, seq) {
 function countParity(seq) {
   let even = 0, odd = 0;
   for (const v of seq) {
-    if (v % 2 === 0) even++;
+    if (v % 2n === 0n) even++;
     else odd++;
   }
   return { even, odd };
@@ -265,22 +266,24 @@ function run() {
   const input = document.getElementById('start-number');
   const errorEl = document.getElementById('error');
   const statsEl = document.getElementById('stats');
-  const n = parseInt(input.value, 10);
+  const raw = input.value.trim();
 
   errorEl.style.display = 'none';
 
-  if (!Number.isInteger(n) || n < 1) {
-    errorEl.textContent = '1以上の整数を入力してください。';
+  if (!/^[0-9]+$/.test(raw) || /^0+$/.test(raw)) {
+    errorEl.textContent = '1以上の整数を入力してください(桁数の制限はありません)。';
     errorEl.style.display = 'block';
     statsEl.style.display = 'none';
     return;
   }
 
+  const n = BigInt(raw);
   const seq = collatzSequence(n);
+  const maxValBig = seq.reduce((a, b) => (b > a ? b : a), seq[0]);
 
   document.getElementById('stat-steps').textContent = (seq.length - 1).toLocaleString();
-  document.getElementById('stat-max').textContent = Math.max(...seq).toLocaleString();
-  document.getElementById('stat-start').textContent = n.toLocaleString();
+  document.getElementById('stat-max').textContent = maxValBig.toString();
+  document.getElementById('stat-start').textContent = n.toString();
   const { even, odd } = countParity(seq);
   document.getElementById('stat-even').textContent = even.toLocaleString();
   document.getElementById('stat-odd').textContent = odd.toLocaleString();
