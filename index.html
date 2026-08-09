@@ -166,7 +166,7 @@
 
   <div class="panel">
     <h2>自動探索モード(23桁以上・奇数のみ、22桁未満に落ちたら次へ)</h2>
-    <p class="desc" style="margin-bottom:12px;">22桁までは反例が無いことが確認済みという前提で、23桁最小の奇数から昇順(+2)に検証します。各数値は 22 桁未満まで下がった時点で「検証済み範囲に到達」として打ち切り、次の奇数に進みます。ブラウザタブを開いている間、バックグラウンド(Web Worker)で処理を続けます。進捗は自動的にこの端末に保存され、再訪時に再開できます。</p>
+    <p class="desc" style="margin-bottom:12px;">22桁までは反例が無いことが確認済みという前提で、23桁最小の奇数から昇順(+2)に検証します。各数値は 22 桁未満まで下がった時点で「検証済み範囲に到達」として打ち切り、次の奇数に進みます。複数の Web Worker を並列実行し、mod 2^16 の事前計算テーブルで一度に16ステップずつ進めることで高速化しています。ブラウザタブを開いている間バックグラウンドで処理を続け、進捗はこの端末に自動保存されます(一時停止/再読み込み時、直前に各Workerへ割り当て済みだが未完了のチャンクは再検証対象から漏れる場合があります)。</p>
     <div class="input-row">
       <button id="auto-start-btn">開始 / 再開</button>
       <button id="auto-pause-btn" disabled>一時停止</button>
@@ -174,12 +174,12 @@
     </div>
     <div class="stats" style="margin-top:16px;">
       <div class="stat"><div class="label">状態</div><div class="value" id="auto-status">停止中</div></div>
+      <div class="stat"><div class="label">並列Worker数</div><div class="value" id="auto-workers">-</div></div>
       <div class="stat"><div class="label">処理済み件数</div><div class="value" id="auto-count">0</div></div>
       <div class="stat"><div class="label">処理速度</div><div class="value" id="auto-rate">-</div></div>
-      <div class="stat"><div class="label">今回バッチの最大ステップ数</div><div class="value" id="auto-maxsteps">-</div></div>
     </div>
     <div class="stat" style="margin-top:12px; width:100%; word-break: break-all;">
-      <div class="label">現在テスト中の値(桁数: <span id="auto-digits">-</span>)</div>
+      <div class="label">次に割り当てる開始値(フロンティア、桁数: <span id="auto-digits">-</span>)</div>
       <div class="value" id="auto-current" style="font-size:0.95rem;">-</div>
     </div>
     <div id="auto-anomaly" class="error" style="display:none; margin-top:12px; font-weight:700;"></div>
@@ -330,78 +330,91 @@ run();
   const STORAGE_KEY = 'collatzAutoSearchProgress';
   const DEFAULT_START = (10n ** 22n) + 1n; // 23桁最小の奇数
   const DIGIT_THRESHOLD = 22; // これ未満の桁数に落ちたら検証済み範囲として打ち切り
+  const JUMP_BITS = 16; // mod 2^16 の事前計算テーブルで一度に進めるステップ数
+  const CHUNK_SIZE = 2000; // 1チャンクあたりに検証する奇数の個数
+  const NUM_WORKERS = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 8));
 
   const startBtn = document.getElementById('auto-start-btn');
   const pauseBtn = document.getElementById('auto-pause-btn');
   const resetBtn = document.getElementById('auto-reset-btn');
   const statusEl = document.getElementById('auto-status');
+  const workersEl = document.getElementById('auto-workers');
   const countEl = document.getElementById('auto-count');
   const rateEl = document.getElementById('auto-rate');
-  const maxStepsEl = document.getElementById('auto-maxsteps');
   const currentEl = document.getElementById('auto-current');
   const digitsEl = document.getElementById('auto-digits');
   const anomalyEl = document.getElementById('auto-anomaly');
 
+  // Worker本体: mod 2^JUMP_BITS のジャンプテーブルを自前で構築し、
+  // 割り当てられたチャンク(開始値+個数)内の奇数を1つずつ検証する。
+  // ジャンプテーブルは「奇数ショートカット」を含む一般化として、
+  // 偶数/奇数どちらでも JUMP_BITS ステップ分の遷移を線形変換 a*m+c (m = v >> JUMP_BITS) で表す。
   const workerSrc = `
-    const DIGIT_THRESHOLD = ${DIGIT_THRESHOLD};
+    const JUMP_BITS = ${JUMP_BITS};
+    const THRESHOLD = 10n ** ${DIGIT_THRESHOLD}n;
     const STEP_GUARD = 2000000;
-    const BATCH_SIZE = 300;
-    let running = false;
-    let current = null;
-    let processedCount = 0n;
+    const MASK = (1n << BigInt(JUMP_BITS)) - 1n;
+
+    let jumpA, jumpC;
+    function buildTable() {
+      const size = 1 << JUMP_BITS;
+      jumpA = new Array(size);
+      jumpC = new Array(size);
+      const baseA = 1n << BigInt(JUMP_BITS);
+      for (let r = 0; r < size; r++) {
+        let c = BigInt(r);
+        let a = baseA;
+        for (let t = 0; t < JUMP_BITS; t++) {
+          if (c % 2n === 0n) { c = c / 2n; a = a / 2n; }
+          else { c = 3n * c + 1n; a = 3n * a; }
+        }
+        jumpA[r] = a;
+        jumpC[r] = c;
+      }
+    }
+    buildTable();
+
+    function jumpStep(v) {
+      const r = Number(v & MASK);
+      const m = v >> BigInt(JUMP_BITS);
+      return jumpA[r] * m + jumpC[r];
+    }
 
     function testOne(n) {
       let v = n;
       let steps = 0;
-      while (v.toString().length > DIGIT_THRESHOLD) {
-        v = (v % 2n === 0n) ? v / 2n : 3n * v + 1n;
-        steps++;
+      while (v >= THRESHOLD) {
+        v = jumpStep(v);
+        steps += JUMP_BITS;
         if (steps > STEP_GUARD) return { anomaly: true, steps };
       }
       return { anomaly: false, steps };
     }
 
-    function runLoop() {
-      if (!running) return;
-      const t0 = Date.now();
-      let localCount = 0;
-      let maxSteps = 0;
-      while (running && localCount < BATCH_SIZE) {
-        const result = testOne(current);
-        if (result.anomaly) {
-          running = false;
-          self.postMessage({ type: 'anomaly', value: current.toString(), steps: result.steps });
-          return;
-        }
-        if (result.steps > maxSteps) maxSteps = result.steps;
-        current += 2n;
-        processedCount += 1n;
-        localCount++;
-      }
-      self.postMessage({
-        type: 'progress',
-        current: current.toString(),
-        processedCount: processedCount.toString(),
-        maxStepsInBatch: maxSteps,
-        batchTimeMs: Date.now() - t0
-      });
-      if (running) setTimeout(runLoop, 0);
-    }
-
     self.onmessage = (e) => {
       const msg = e.data;
-      if (msg.type === 'start') {
-        current = BigInt(msg.current);
-        processedCount = BigInt(msg.processedCount || '0');
-        running = true;
-        runLoop();
-      } else if (msg.type === 'stop') {
-        running = false;
+      if (msg.type !== 'chunk') return;
+      const t0 = Date.now();
+      let n = BigInt(msg.start);
+      const count = msg.count;
+      for (let i = 0; i < count; i++) {
+        const result = testOne(n);
+        if (result.anomaly) {
+          self.postMessage({ type: 'anomaly', value: n.toString(), steps: result.steps });
+          return;
+        }
+        n += 2n;
       }
+      self.postMessage({
+        type: 'chunkDone',
+        processed: count,
+        lastValue: n.toString(),
+        batchTimeMs: Date.now() - t0
+      });
     };
   `;
 
-  let worker = null;
+  let workers = [];
   let state = loadState();
   let cumulativeElapsedMs = state.cumulativeElapsedMs || 0;
   let isRunning = false;
@@ -412,7 +425,7 @@ run();
       if (raw) return JSON.parse(raw);
     } catch (e) { /* ignore corrupt state */ }
     return {
-      current: DEFAULT_START.toString(),
+      nextChunkStart: DEFAULT_START.toString(),
       processedCount: '0',
       cumulativeElapsedMs: 0
     };
@@ -423,13 +436,34 @@ run();
   }
 
   function updateDisplay() {
+    workersEl.textContent = isRunning ? `${NUM_WORKERS}` : `${NUM_WORKERS}(待機中)`;
     countEl.textContent = BigInt(state.processedCount).toLocaleString();
-    currentEl.textContent = state.current;
-    digitsEl.textContent = state.current.length;
+    currentEl.textContent = state.nextChunkStart;
+    digitsEl.textContent = state.nextChunkStart.length;
     const rate = cumulativeElapsedMs > 0
       ? (Number(BigInt(state.processedCount)) / (cumulativeElapsedMs / 1000))
       : 0;
     rateEl.textContent = rate > 0 ? `${rate.toFixed(1)} 件/秒` : '-';
+  }
+
+  function assignChunk(worker) {
+    if (!isRunning) return;
+    const chunkStart = BigInt(state.nextChunkStart);
+    state.nextChunkStart = (chunkStart + BigInt(CHUNK_SIZE) * 2n).toString();
+    saveState();
+    updateDisplay();
+    worker.postMessage({ type: 'chunk', start: chunkStart.toString(), count: CHUNK_SIZE });
+  }
+
+  function handleAnomaly(msg) {
+    isRunning = false;
+    workers.forEach((w) => w.terminate());
+    workers = [];
+    statusEl.textContent = '要確認(異常検知)';
+    startBtn.disabled = false;
+    pauseBtn.disabled = true;
+    anomalyEl.style.display = 'block';
+    anomalyEl.textContent = `値 ${msg.value} が ${msg.steps} ステップ経過しても22桁未満に下がりませんでした。反例の可能性があるため自動停止しました。手動で確認してください。`;
   }
 
   function createWorker() {
@@ -437,21 +471,15 @@ run();
     const w = new Worker(URL.createObjectURL(blob));
     w.onmessage = (e) => {
       const msg = e.data;
-      if (msg.type === 'progress') {
-        state.current = msg.current;
-        state.processedCount = msg.processedCount;
+      if (msg.type === 'chunkDone') {
+        state.processedCount = (BigInt(state.processedCount) + BigInt(msg.processed)).toString();
         cumulativeElapsedMs += msg.batchTimeMs;
         state.cumulativeElapsedMs = cumulativeElapsedMs;
-        maxStepsEl.textContent = msg.maxStepsInBatch.toLocaleString();
         saveState();
         updateDisplay();
+        assignChunk(w);
       } else if (msg.type === 'anomaly') {
-        isRunning = false;
-        statusEl.textContent = '要確認(異常検知)';
-        startBtn.disabled = false;
-        pauseBtn.disabled = true;
-        anomalyEl.style.display = 'block';
-        anomalyEl.textContent = `値 ${msg.value} が ${msg.steps} ステップ経過しても22桁未満に下がりませんでした。反例の可能性があるため自動停止しました。手動で確認してください。`;
+        handleAnomaly(msg);
       }
     };
     return w;
@@ -459,39 +487,39 @@ run();
 
   function start() {
     if (isRunning) return;
-    if (!worker) worker = createWorker();
     isRunning = true;
-    statusEl.textContent = '実行中';
+    statusEl.textContent = `実行中(${NUM_WORKERS}並列)`;
     startBtn.disabled = true;
     pauseBtn.disabled = false;
     anomalyEl.style.display = 'none';
-    worker.postMessage({ type: 'start', current: state.current, processedCount: state.processedCount });
+    if (workers.length === 0) {
+      for (let i = 0; i < NUM_WORKERS; i++) workers.push(createWorker());
+    }
+    workers.forEach((w) => assignChunk(w));
+    updateDisplay();
   }
 
   function pause() {
-    if (!isRunning || !worker) return;
-    worker.postMessage({ type: 'stop' });
+    if (!isRunning) return;
     isRunning = false;
+    workers.forEach((w) => w.terminate());
+    workers = [];
     statusEl.textContent = '一時停止中';
     startBtn.disabled = false;
     pauseBtn.disabled = true;
+    updateDisplay();
   }
 
   function reset() {
     pause();
-    if (worker) {
-      worker.terminate();
-      worker = null;
-    }
     state = {
-      current: DEFAULT_START.toString(),
+      nextChunkStart: DEFAULT_START.toString(),
       processedCount: '0',
       cumulativeElapsedMs: 0
     };
     cumulativeElapsedMs = 0;
     saveState();
     updateDisplay();
-    maxStepsEl.textContent = '-';
     rateEl.textContent = '-';
     statusEl.textContent = '停止中';
     anomalyEl.style.display = 'none';
