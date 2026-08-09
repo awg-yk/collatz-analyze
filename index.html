@@ -430,16 +430,40 @@ run();
   let lastUpdateTime = null;
   let staleTimer = null;
 
-  function loadState() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) return JSON.parse(raw);
-    } catch (e) { /* ignore corrupt state */ }
+  function defaultState() {
     return {
       nextChunkStart: DEFAULT_START.toString(),
       processedCount: '0',
       cumulativeElapsedMs: 0
     };
+  }
+
+  function isValidOddDecimal(s) {
+    return typeof s === 'string' && /^[0-9]+$/.test(s) && BigInt(s) % 2n === 1n;
+  }
+
+  function loadState() {
+    let parsed = null;
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) parsed = JSON.parse(raw);
+    } catch (e) { /* ignore corrupt state */ }
+    if (!parsed || typeof parsed !== 'object') return defaultState();
+
+    // 旧バージョン(単一Worker版)は `current` というキー名だった。移行する。
+    if (parsed.nextChunkStart === undefined && typeof parsed.current === 'string') {
+      parsed.nextChunkStart = parsed.current;
+    }
+
+    const result = defaultState();
+    if (isValidOddDecimal(parsed.nextChunkStart)) result.nextChunkStart = parsed.nextChunkStart;
+    if (typeof parsed.processedCount === 'string' && /^[0-9]+$/.test(parsed.processedCount)) {
+      result.processedCount = parsed.processedCount;
+    }
+    if (typeof parsed.cumulativeElapsedMs === 'number' && parsed.cumulativeElapsedMs >= 0) {
+      result.cumulativeElapsedMs = parsed.cumulativeElapsedMs;
+    }
+    return result;
   }
 
   function saveState() {
