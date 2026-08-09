@@ -332,9 +332,9 @@ run();
 // ---- 自動探索モード ----
 (function () {
   const STORAGE_KEY = 'collatzAutoSearchProgress';
-  const DEFAULT_START = (10n ** 22n) + 1n; // 23桁最小の奇数
-  const DIGIT_THRESHOLD = 22; // これ未満の桁数に落ちたら検証済み範囲として打ち切り
-  const JUMP_BITS = 16; // mod 2^16 の事前計算テーブルで一度に進めるステップ数
+  const DIGIT_THRESHOLD = 22; // これ未満の桁数までは既に反例が無いと確認済み
+  const DEFAULT_START = (10n ** BigInt(DIGIT_THRESHOLD)) + 1n; // 23桁最小の奇数
+  const JUMP_BITS = 20; // mod 2^20 の事前計算テーブルで一度に進めるステップ数(B-1)
   const CHUNK_SIZE = 2000; // 1チャンクあたりに検証する奇数の個数
   const NUM_WORKERS = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 8));
 
@@ -350,45 +350,50 @@ run();
   const anomalyEl = document.getElementById('auto-anomaly');
   const lastUpdateEl = document.getElementById('auto-lastupdate');
 
-  // Worker本体: mod 2^JUMP_BITS のジャンプテーブルを自前で構築し、
+  // ジャンプテーブル(mod 2^JUMP_BITS の事前計算)はメインスレッドで1回だけ構築し、
+  // 各Workerには構築済みのバイナリ(Uint32Array)をコピー転送する(B-2)。
+  // aとcはK=20では高々6^(K/2)程度に収まり32bitに収まることを確認済み。
+  // 値は「奇数ショートカット」を含む一般化として、偶数/奇数どちらでも
+  // JUMP_BITS ステップ分の遷移を線形変換 a*m+c (m = v >> JUMP_BITS) で表す。
+  function buildJumpTable() {
+    const size = 1 << JUMP_BITS;
+    const a = new Uint32Array(size);
+    const c = new Uint32Array(size);
+    const baseA = 1 << JUMP_BITS;
+    for (let r = 0; r < size; r++) {
+      let cc = r, aa = baseA;
+      for (let t = 0; t < JUMP_BITS; t++) {
+        if (cc % 2 === 0) { cc = cc / 2; aa = aa / 2; }
+        else { cc = 3 * cc + 1; aa = 3 * aa; }
+      }
+      a[r] = aa;
+      c[r] = cc;
+    }
+    return { a, c };
+  }
+
+  // Worker本体: メインスレッドから受け取ったジャンプテーブルを使い、
   // 割り当てられたチャンク(開始値+個数)内の奇数を1つずつ検証する。
-  // ジャンプテーブルは「奇数ショートカット」を含む一般化として、
-  // 偶数/奇数どちらでも JUMP_BITS ステップ分の遷移を線形変換 a*m+c (m = v >> JUMP_BITS) で表す。
   const workerSrc = `
     const JUMP_BITS = ${JUMP_BITS};
-    const THRESHOLD = 10n ** ${DIGIT_THRESHOLD}n;
     const STEP_GUARD = 2000000;
     const MASK = (1n << BigInt(JUMP_BITS)) - 1n;
-
-    let jumpA, jumpC;
-    function buildTable() {
-      const size = 1 << JUMP_BITS;
-      jumpA = new Array(size);
-      jumpC = new Array(size);
-      const baseA = 1n << BigInt(JUMP_BITS);
-      for (let r = 0; r < size; r++) {
-        let c = BigInt(r);
-        let a = baseA;
-        for (let t = 0; t < JUMP_BITS; t++) {
-          if (c % 2n === 0n) { c = c / 2n; a = a / 2n; }
-          else { c = 3n * c + 1n; a = 3n * a; }
-        }
-        jumpA[r] = a;
-        jumpC[r] = c;
-      }
-    }
-    buildTable();
+    let jumpA = null, jumpC = null;
 
     function jumpStep(v) {
       const r = Number(v & MASK);
       const m = v >> BigInt(JUMP_BITS);
-      return jumpA[r] * m + jumpC[r];
+      return BigInt(jumpA[r]) * m + BigInt(jumpC[r]);
     }
 
+    // 強い形の帰納法: 昇順に検証しているので、軌道が「自分自身より小さい値」まで
+    // 下がった時点で打ち切ってよい(その小さい値は22桁未満まで既に確定済みか、
+    // まだ22桁以上でもいずれ同じ規則で検証される、より小さい出発点だから)。
+    // これは THRESHOLD(22桁)まで下がるのを待つより大幅に緩い条件になる。
     function testOne(n) {
       let v = n;
       let steps = 0;
-      while (v >= THRESHOLD) {
+      while (v >= n) {
         v = jumpStep(v);
         steps += JUMP_BITS;
         if (steps > STEP_GUARD) return { anomaly: true, steps };
@@ -398,6 +403,12 @@ run();
 
     self.onmessage = (e) => {
       const msg = e.data;
+      if (msg.type === 'init') {
+        jumpA = new Uint32Array(msg.a);
+        jumpC = new Uint32Array(msg.c);
+        self.postMessage({ type: 'ready' });
+        return;
+      }
       if (msg.type !== 'chunk') return;
       const t0 = Date.now();
       try {
@@ -429,6 +440,7 @@ run();
   let isRunning = false;
   let lastUpdateTime = null;
   let staleTimer = null;
+  let jumpTable = null; // { a: Uint32Array, c: Uint32Array }, built lazily once on first start()
 
   function defaultState() {
     return {
@@ -531,21 +543,24 @@ run();
     if (idx !== -1) workers.splice(idx, 1);
     try { deadWorker.terminate(); } catch (e) { /* already dead */ }
     if (!isRunning) return;
-    const replacement = createWorker();
+    const replacement = createWorker(deadWorker.currentChunk || null);
     workers.push(replacement);
-    if (deadWorker.currentChunk) {
-      dispatchChunk(replacement, deadWorker.currentChunk);
-    } else {
-      assignChunk(replacement);
-    }
   }
 
-  function createWorker() {
+  function createWorker(retryChunk) {
     const blob = new Blob([workerSrc], { type: 'application/javascript' });
     const w = new Worker(URL.createObjectURL(blob));
     w.currentChunk = null;
     w.onmessage = (e) => {
       const msg = e.data;
+      if (msg.type === 'ready') {
+        if (retryChunk) {
+          dispatchChunk(w, retryChunk);
+        } else {
+          assignChunk(w);
+        }
+        return;
+      }
       if (msg.type === 'chunkDone') {
         w.currentChunk = null;
         state.processedCount = (BigInt(state.processedCount) + BigInt(msg.processed)).toString();
@@ -567,11 +582,16 @@ run();
       err.preventDefault && err.preventDefault();
       replaceWorker(w);
     };
+    // ジャンプテーブルは1回構築したものを各Workerへコピーして転送する(B-2)。
+    const aCopy = jumpTable.a.slice();
+    const cCopy = jumpTable.c.slice();
+    w.postMessage({ type: 'init', a: aCopy.buffer, c: cCopy.buffer }, [aCopy.buffer, cCopy.buffer]);
     return w;
   }
 
   function start() {
     if (isRunning) return;
+    if (!jumpTable) jumpTable = buildJumpTable();
     isRunning = true;
     statusEl.textContent = `実行中(${NUM_WORKERS}並列)`;
     startBtn.disabled = true;
@@ -580,7 +600,6 @@ run();
     if (workers.length === 0) {
       for (let i = 0; i < NUM_WORKERS; i++) workers.push(createWorker());
     }
-    workers.forEach((w) => assignChunk(w));
     markUpdated();
     updateDisplay();
     if (!staleTimer) staleTimer = setInterval(tickStaleness, 1000);
