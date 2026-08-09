@@ -142,6 +142,8 @@
       <div class="stat"><div class="label">試行回数(ステップ数)</div><div class="value" id="stat-steps">-</div></div>
       <div class="stat"><div class="label">最大値</div><div class="value" id="stat-max">-</div></div>
       <div class="stat"><div class="label">開始値</div><div class="value" id="stat-start">-</div></div>
+      <div class="stat"><div class="label">偶数の回数</div><div class="value" id="stat-even">-</div></div>
+      <div class="stat"><div class="label">奇数の回数</div><div class="value" id="stat-odd">-</div></div>
     </div>
   </div>
 
@@ -155,7 +157,7 @@
     <div class="table-wrap">
       <table>
         <thead>
-          <tr><th>ステップ</th><th>値</th></tr>
+          <tr><th>ステップ</th><th>値</th><th>偶数/奇数</th></tr>
         </thead>
         <tbody id="table-body"></tbody>
       </table>
@@ -243,8 +245,20 @@ function drawChart(canvas, seq) {
 }
 
 function renderTable(tbody, seq) {
-  const rows = seq.map((v, i) => `<tr><td>${i}</td><td>${v.toLocaleString()}</td></tr>`).join('');
+  const rows = seq.map((v, i) => {
+    const parity = (v % 2 === 0) ? '偶数' : '奇数';
+    return `<tr><td>${i}</td><td>${v.toLocaleString()}</td><td>${parity}</td></tr>`;
+  }).join('');
   tbody.innerHTML = rows;
+}
+
+function countParity(seq) {
+  let even = 0, odd = 0;
+  for (const v of seq) {
+    if (v % 2 === 0) even++;
+    else odd++;
+  }
+  return { even, odd };
 }
 
 function run() {
@@ -267,6 +281,9 @@ function run() {
   document.getElementById('stat-steps').textContent = (seq.length - 1).toLocaleString();
   document.getElementById('stat-max').textContent = Math.max(...seq).toLocaleString();
   document.getElementById('stat-start').textContent = n.toLocaleString();
+  const { even, odd } = countParity(seq);
+  document.getElementById('stat-even').textContent = even.toLocaleString();
+  document.getElementById('stat-odd').textContent = odd.toLocaleString();
   statsEl.style.display = 'flex';
 
   drawChart(document.getElementById('chart'), seq);
