@@ -163,6 +163,27 @@
       </table>
     </div>
   </div>
+
+  <div class="panel">
+    <h2>自動探索モード(23桁以上・奇数のみ、22桁未満に落ちたら次へ)</h2>
+    <p class="desc" style="margin-bottom:12px;">22桁までは反例が無いことが確認済みという前提で、23桁最小の奇数から昇順(+2)に検証します。各数値は 22 桁未満まで下がった時点で「検証済み範囲に到達」として打ち切り、次の奇数に進みます。ブラウザタブを開いている間、バックグラウンド(Web Worker)で処理を続けます。進捗は自動的にこの端末に保存され、再訪時に再開できます。</p>
+    <div class="input-row">
+      <button id="auto-start-btn">開始 / 再開</button>
+      <button id="auto-pause-btn" disabled>一時停止</button>
+      <button id="auto-reset-btn">リセット</button>
+    </div>
+    <div class="stats" style="margin-top:16px;">
+      <div class="stat"><div class="label">状態</div><div class="value" id="auto-status">停止中</div></div>
+      <div class="stat"><div class="label">処理済み件数</div><div class="value" id="auto-count">0</div></div>
+      <div class="stat"><div class="label">処理速度</div><div class="value" id="auto-rate">-</div></div>
+      <div class="stat"><div class="label">今回バッチの最大ステップ数</div><div class="value" id="auto-maxsteps">-</div></div>
+    </div>
+    <div class="stat" style="margin-top:12px; width:100%; word-break: break-all;">
+      <div class="label">現在テスト中の値(桁数: <span id="auto-digits">-</span>)</div>
+      <div class="value" id="auto-current" style="font-size:0.95rem;">-</div>
+    </div>
+    <div id="auto-anomaly" class="error" style="display:none; margin-top:12px; font-weight:700;"></div>
+  </div>
 </div>
 
 <script>
@@ -303,6 +324,185 @@ window.addEventListener('resize', () => {
 });
 
 run();
+
+// ---- 自動探索モード ----
+(function () {
+  const STORAGE_KEY = 'collatzAutoSearchProgress';
+  const DEFAULT_START = (10n ** 22n) + 1n; // 23桁最小の奇数
+  const DIGIT_THRESHOLD = 22; // これ未満の桁数に落ちたら検証済み範囲として打ち切り
+
+  const startBtn = document.getElementById('auto-start-btn');
+  const pauseBtn = document.getElementById('auto-pause-btn');
+  const resetBtn = document.getElementById('auto-reset-btn');
+  const statusEl = document.getElementById('auto-status');
+  const countEl = document.getElementById('auto-count');
+  const rateEl = document.getElementById('auto-rate');
+  const maxStepsEl = document.getElementById('auto-maxsteps');
+  const currentEl = document.getElementById('auto-current');
+  const digitsEl = document.getElementById('auto-digits');
+  const anomalyEl = document.getElementById('auto-anomaly');
+
+  const workerSrc = `
+    const DIGIT_THRESHOLD = ${DIGIT_THRESHOLD};
+    const STEP_GUARD = 2000000;
+    const BATCH_SIZE = 300;
+    let running = false;
+    let current = null;
+    let processedCount = 0n;
+
+    function testOne(n) {
+      let v = n;
+      let steps = 0;
+      while (v.toString().length > DIGIT_THRESHOLD) {
+        v = (v % 2n === 0n) ? v / 2n : 3n * v + 1n;
+        steps++;
+        if (steps > STEP_GUARD) return { anomaly: true, steps };
+      }
+      return { anomaly: false, steps };
+    }
+
+    function runLoop() {
+      if (!running) return;
+      const t0 = Date.now();
+      let localCount = 0;
+      let maxSteps = 0;
+      while (running && localCount < BATCH_SIZE) {
+        const result = testOne(current);
+        if (result.anomaly) {
+          running = false;
+          self.postMessage({ type: 'anomaly', value: current.toString(), steps: result.steps });
+          return;
+        }
+        if (result.steps > maxSteps) maxSteps = result.steps;
+        current += 2n;
+        processedCount += 1n;
+        localCount++;
+      }
+      self.postMessage({
+        type: 'progress',
+        current: current.toString(),
+        processedCount: processedCount.toString(),
+        maxStepsInBatch: maxSteps,
+        batchTimeMs: Date.now() - t0
+      });
+      if (running) setTimeout(runLoop, 0);
+    }
+
+    self.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === 'start') {
+        current = BigInt(msg.current);
+        processedCount = BigInt(msg.processedCount || '0');
+        running = true;
+        runLoop();
+      } else if (msg.type === 'stop') {
+        running = false;
+      }
+    };
+  `;
+
+  let worker = null;
+  let state = loadState();
+  let cumulativeElapsedMs = state.cumulativeElapsedMs || 0;
+  let isRunning = false;
+
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) return JSON.parse(raw);
+    } catch (e) { /* ignore corrupt state */ }
+    return {
+      current: DEFAULT_START.toString(),
+      processedCount: '0',
+      cumulativeElapsedMs: 0
+    };
+  }
+
+  function saveState() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
+
+  function updateDisplay() {
+    countEl.textContent = BigInt(state.processedCount).toLocaleString();
+    currentEl.textContent = state.current;
+    digitsEl.textContent = state.current.length;
+    const rate = cumulativeElapsedMs > 0
+      ? (Number(BigInt(state.processedCount)) / (cumulativeElapsedMs / 1000))
+      : 0;
+    rateEl.textContent = rate > 0 ? `${rate.toFixed(1)} 件/秒` : '-';
+  }
+
+  function createWorker() {
+    const blob = new Blob([workerSrc], { type: 'application/javascript' });
+    const w = new Worker(URL.createObjectURL(blob));
+    w.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === 'progress') {
+        state.current = msg.current;
+        state.processedCount = msg.processedCount;
+        cumulativeElapsedMs += msg.batchTimeMs;
+        state.cumulativeElapsedMs = cumulativeElapsedMs;
+        maxStepsEl.textContent = msg.maxStepsInBatch.toLocaleString();
+        saveState();
+        updateDisplay();
+      } else if (msg.type === 'anomaly') {
+        isRunning = false;
+        statusEl.textContent = '要確認(異常検知)';
+        startBtn.disabled = false;
+        pauseBtn.disabled = true;
+        anomalyEl.style.display = 'block';
+        anomalyEl.textContent = `値 ${msg.value} が ${msg.steps} ステップ経過しても22桁未満に下がりませんでした。反例の可能性があるため自動停止しました。手動で確認してください。`;
+      }
+    };
+    return w;
+  }
+
+  function start() {
+    if (isRunning) return;
+    if (!worker) worker = createWorker();
+    isRunning = true;
+    statusEl.textContent = '実行中';
+    startBtn.disabled = true;
+    pauseBtn.disabled = false;
+    anomalyEl.style.display = 'none';
+    worker.postMessage({ type: 'start', current: state.current, processedCount: state.processedCount });
+  }
+
+  function pause() {
+    if (!isRunning || !worker) return;
+    worker.postMessage({ type: 'stop' });
+    isRunning = false;
+    statusEl.textContent = '一時停止中';
+    startBtn.disabled = false;
+    pauseBtn.disabled = true;
+  }
+
+  function reset() {
+    pause();
+    if (worker) {
+      worker.terminate();
+      worker = null;
+    }
+    state = {
+      current: DEFAULT_START.toString(),
+      processedCount: '0',
+      cumulativeElapsedMs: 0
+    };
+    cumulativeElapsedMs = 0;
+    saveState();
+    updateDisplay();
+    maxStepsEl.textContent = '-';
+    rateEl.textContent = '-';
+    statusEl.textContent = '停止中';
+    anomalyEl.style.display = 'none';
+  }
+
+  startBtn.addEventListener('click', start);
+  pauseBtn.addEventListener('click', pause);
+  resetBtn.addEventListener('click', reset);
+
+  updateDisplay();
+})();
 </script>
 </body>
 </html>
