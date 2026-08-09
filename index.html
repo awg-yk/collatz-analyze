@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>コラッツ予想 解析ツール</title>
+<style>
+  :root {
+    --bg: #0f172a;
+    --panel: #1e293b;
+    --text: #e2e8f0;
+    --muted: #94a3b8;
+    --accent: #38bdf8;
+    --border: #334155;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: "Helvetica Neue", Arial, "Hiragino Kaku Gothic ProN", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 24px;
+  }
+  h1 {
+    font-size: 1.5rem;
+    margin-bottom: 4px;
+  }
+  p.desc {
+    color: var(--muted);
+    margin-top: 0;
+    margin-bottom: 24px;
+  }
+  .container {
+    max-width: 900px;
+    margin: 0 auto;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  .input-row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  label {
+    color: var(--muted);
+    font-size: 0.9rem;
+  }
+  input[type="number"] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 1rem;
+    width: 160px;
+  }
+  button {
+    background: var(--accent);
+    color: #0f172a;
+    border: none;
+    padding: 9px 18px;
+    border-radius: 6px;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 0.95rem;
+  }
+  button:hover { opacity: 0.9; }
+  .error {
+    color: #f87171;
+    margin-top: 8px;
+    font-size: 0.9rem;
+  }
+  .stats {
+    display: flex;
+    gap: 24px;
+    margin-top: 16px;
+    flex-wrap: wrap;
+  }
+  .stat {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 10px 16px;
+    min-width: 120px;
+  }
+  .stat .label { color: var(--muted); font-size: 0.8rem; }
+  .stat .value { font-size: 1.2rem; font-weight: 600; margin-top: 2px; }
+  canvas {
+    width: 100%;
+    height: 320px;
+    background: var(--bg);
+    border-radius: 6px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.9rem;
+  }
+  th, td {
+    padding: 6px 10px;
+    text-align: right;
+    border-bottom: 1px solid var(--border);
+  }
+  th:first-child, td:first-child { text-align: left; }
+  thead th {
+    color: var(--muted);
+    font-weight: 600;
+    position: sticky;
+    top: 0;
+    background: var(--panel);
+  }
+  .table-wrap {
+    max-height: 400px;
+    overflow-y: auto;
+  }
+  h2 {
+    font-size: 1.05rem;
+    margin-top: 0;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>コラッツ予想 解析ツール</h1>
+  <p class="desc">正の整数を入力すると、コラッツ数列(n が偶数なら n/2、奇数なら 3n+1 を 1 になるまで繰り返す)の推移をグラフと表で表示します。</p>
+
+  <div class="panel">
+    <div class="input-row">
+      <label for="start-number">開始値 (正の整数):</label>
+      <input type="number" id="start-number" value="27" min="1" step="1">
+      <button id="run-btn">計算する</button>
+    </div>
+    <div id="error" class="error" style="display:none;"></div>
+    <div class="stats" id="stats" style="display:none;">
+      <div class="stat"><div class="label">試行回数(ステップ数)</div><div class="value" id="stat-steps">-</div></div>
+      <div class="stat"><div class="label">最大値</div><div class="value" id="stat-max">-</div></div>
+      <div class="stat"><div class="label">開始値</div><div class="value" id="stat-start">-</div></div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h2>グラフ (試行回数 vs 値)</h2>
+    <canvas id="chart"></canvas>
+  </div>
+
+  <div class="panel">
+    <h2>表</h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr><th>ステップ</th><th>値</th></tr>
+        </thead>
+        <tbody id="table-body"></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+function collatzSequence(n) {
+  const seq = [n];
+  while (n !== 1) {
+    n = (n % 2 === 0) ? n / 2 : 3 * n + 1;
+    seq.push(n);
+    if (seq.length > 100000) break; // safety guard
+  }
+  return seq;
+}
+
+function drawChart(canvas, seq) {
+  const ctx = canvas.getContext('2d');
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+  const w = rect.width, h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const padding = { top: 20, right: 20, bottom: 30, left: 60 };
+  const plotW = w - padding.left - padding.right;
+  const plotH = h - padding.top - padding.bottom;
+
+  const maxVal = Math.max(...seq);
+  const maxStep = seq.length - 1;
+
+  const xScale = (i) => padding.left + (plotW * i) / (maxStep || 1);
+  const yScale = (v) => padding.top + plotH - (plotH * v) / (maxVal || 1);
+
+  // axes
+  ctx.strokeStyle = '#334155';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(padding.left, padding.top);
+  ctx.lineTo(padding.left, padding.top + plotH);
+  ctx.lineTo(padding.left + plotW, padding.top + plotH);
+  ctx.stroke();
+
+  // y labels
+  ctx.fillStyle = '#94a3b8';
+  ctx.font = '11px sans-serif';
+  ctx.textAlign = 'right';
+  const yTicks = 5;
+  for (let t = 0; t <= yTicks; t++) {
+    const v = (maxVal * t) / yTicks;
+    const y = yScale(v);
+    ctx.fillText(Math.round(v).toLocaleString(), padding.left - 8, y + 3);
+    ctx.strokeStyle = 'rgba(51,65,85,0.4)';
+    ctx.beginPath();
+    ctx.moveTo(padding.left, y);
+    ctx.lineTo(padding.left + plotW, y);
+    ctx.stroke();
+  }
+
+  // x labels
+  ctx.textAlign = 'center';
+  const xTicks = Math.min(10, maxStep);
+  for (let t = 0; t <= xTicks; t++) {
+    const step = Math.round((maxStep * t) / xTicks);
+    const x = xScale(step);
+    ctx.fillText(step, x, padding.top + plotH + 18);
+  }
+
+  // line
+  ctx.strokeStyle = '#38bdf8';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  seq.forEach((v, i) => {
+    const x = xScale(i);
+    const y = yScale(v);
+    if (i === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+  ctx.stroke();
+}
+
+function renderTable(tbody, seq) {
+  const rows = seq.map((v, i) => `<tr><td>${i}</td><td>${v.toLocaleString()}</td></tr>`).join('');
+  tbody.innerHTML = rows;
+}
+
+function run() {
+  const input = document.getElementById('start-number');
+  const errorEl = document.getElementById('error');
+  const statsEl = document.getElementById('stats');
+  const n = parseInt(input.value, 10);
+
+  errorEl.style.display = 'none';
+
+  if (!Number.isInteger(n) || n < 1) {
+    errorEl.textContent = '1以上の整数を入力してください。';
+    errorEl.style.display = 'block';
+    statsEl.style.display = 'none';
+    return;
+  }
+
+  const seq = collatzSequence(n);
+
+  document.getElementById('stat-steps').textContent = (seq.length - 1).toLocaleString();
+  document.getElementById('stat-max').textContent = Math.max(...seq).toLocaleString();
+  document.getElementById('stat-start').textContent = n.toLocaleString();
+  statsEl.style.display = 'flex';
+
+  drawChart(document.getElementById('chart'), seq);
+  renderTable(document.getElementById('table-body'), seq);
+}
+
+document.getElementById('run-btn').addEventListener('click', run);
+document.getElementById('start-number').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') run();
+});
+window.addEventListener('resize', () => {
+  const seqLen = document.getElementById('table-body').children.length;
+  if (seqLen > 0) run();
+});
+
+run();
+</script>
+</body>
+</html>
