@@ -188,6 +188,38 @@
     </div>
     <div id="auto-anomaly" class="error" style="display:none; margin-top:12px; font-weight:700;"></div>
   </div>
+
+  <div class="panel">
+    <h2>統計的優先探索(非網羅・案4)</h2>
+    <p class="desc" style="margin-bottom:12px;">
+      上の網羅モードとは別の、確率的な補助探索です。Tao(2019)の密度定理が示す
+      「ほとんどの軌道はほぼ有界な値に落ちる」という結果を踏まえ、mod 2^20 の
+      ジャンプテーブルから「20ステップ進めても値があまり縮まない(成長率が高い)」
+      統計的にリスクの高い剰余類を重み付きで優先的にサンプリングします。
+      桁数もランダムに変えながら(23〜60桁程度)非網羅的に探索するため、
+      「反例が存在しないことの証明」にはなりません。あくまで限られた計算資源で
+      反例を早く見つけられる可能性を高めるための補助的な探索です。
+      昇順の網羅性を前提にしないため、上のモードで使っている
+      「自分より小さい値まで下がったら終了」というショートカットは使えず、
+      毎回22桁(10^22)未満まで確認します。
+    </p>
+    <div class="input-row">
+      <button id="sample-start-btn">開始 / 再開</button>
+      <button id="sample-pause-btn" disabled>一時停止</button>
+      <button id="sample-reset-btn">リセット</button>
+    </div>
+    <div class="stats" style="margin-top:16px;">
+      <div class="stat"><div class="label">状態</div><div class="value" id="sample-status">停止中</div></div>
+      <div class="stat"><div class="label">サンプル数</div><div class="value" id="sample-count">0</div></div>
+      <div class="stat"><div class="label">処理速度</div><div class="value" id="sample-rate">-</div></div>
+      <div class="stat"><div class="label">今回の最大ステップ数</div><div class="value" id="sample-maxsteps">-</div></div>
+    </div>
+    <div class="stat" style="margin-top:12px; width:100%; word-break: break-all;">
+      <div class="label">直近のサンプル値(桁数: <span id="sample-digits">-</span>)</div>
+      <div class="value" id="sample-current" style="font-size:0.95rem;">-</div>
+    </div>
+    <div id="sample-anomaly" class="error" style="display:none; margin-top:12px; font-weight:700;"></div>
+  </div>
 </div>
 
 <script>
@@ -681,6 +713,316 @@ run();
   pauseBtn.addEventListener('click', pause);
   resetBtn.addEventListener('click', reset);
 
+  updateDisplay();
+})();
+
+// ---- 統計的優先探索モード(案4: Tao(2019)の密度定理を踏まえたサンプリング) ----
+(function () {
+  const STORAGE_KEY = 'collatzSamplingProgress';
+  const DIGIT_THRESHOLD = 22;
+  const JUMP_BITS = 20;
+  const MIN_DIGITS = 23;
+  const MAX_DIGITS = 60;
+  const TOP_K = 2000; // リスクスコア上位何件の剰余類を候補にするか
+  const SAMPLE_BATCH = 300; // 1バッチあたりのサンプル数
+  const NUM_WORKERS = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 8));
+
+  const startBtn = document.getElementById('sample-start-btn');
+  const pauseBtn = document.getElementById('sample-pause-btn');
+  const resetBtn = document.getElementById('sample-reset-btn');
+  const statusEl = document.getElementById('sample-status');
+  const countEl = document.getElementById('sample-count');
+  const rateEl = document.getElementById('sample-rate');
+  const maxStepsEl = document.getElementById('sample-maxsteps');
+  const currentEl = document.getElementById('sample-current');
+  const digitsEl = document.getElementById('sample-digits');
+  const anomalyEl = document.getElementById('sample-anomaly');
+
+  // mod 2^JUMP_BITS のジャンプテーブル(網羅モードと同じ構築法)。
+  function buildJumpTable() {
+    const size = 1 << JUMP_BITS;
+    const a = new Uint32Array(size);
+    const c = new Uint32Array(size);
+    const baseA = 1 << JUMP_BITS;
+    for (let r = 0; r < size; r++) {
+      let cc = r, aa = baseA;
+      for (let t = 0; t < JUMP_BITS; t++) {
+        if (cc % 2 === 0) { cc = cc / 2; aa = aa / 2; }
+        else { cc = 3 * cc + 1; aa = 3 * aa; }
+      }
+      a[r] = aa;
+      c[r] = cc;
+    }
+    return { a, c };
+  }
+
+  // リスクスコア = a[r] / 2^JUMP_BITS (JUMP_BITSステップ進めたときの成長率)。
+  // 1に近い/大きいほど「なかなか縮まない」統計的にリスクの高い剰余類とみなし、
+  // 奇数の剰余のみを対象に上位TOP_K件を重み付きサンプリング候補とする。
+  function buildRiskList(table) {
+    const size = table.a.length;
+    const baseA = size;
+    const entries = [];
+    for (let r = 1; r < size; r += 2) {
+      entries.push([r, table.a[r] / baseA]);
+    }
+    entries.sort((x, y) => y[1] - x[1]);
+    const top = entries.slice(0, Math.min(TOP_K, entries.length));
+    const residues = new Uint32Array(top.length);
+    const cumWeights = new Float64Array(top.length);
+    let cum = 0;
+    for (let i = 0; i < top.length; i++) {
+      residues[i] = top[i][0];
+      cum += Math.max(top[i][1], 0.01);
+      cumWeights[i] = cum;
+    }
+    return { residues, cumWeights, total: cum };
+  }
+
+  const workerSrc = `
+    const JUMP_BITS = ${JUMP_BITS};
+    const THRESHOLD = 10n ** ${DIGIT_THRESHOLD}n;
+    const MIN_DIGITS = ${MIN_DIGITS};
+    const MAX_DIGITS = ${MAX_DIGITS};
+    const STEP_GUARD = 2000000;
+    const MASK = (1n << BigInt(JUMP_BITS)) - 1n;
+    let jumpA = null, jumpC = null, residues = null, cumWeights = null, total = 0;
+
+    function jumpStep(v) {
+      const r = Number(v & MASK);
+      const m = v >> BigInt(JUMP_BITS);
+      return BigInt(jumpA[r]) * m + BigInt(jumpC[r]);
+    }
+
+    // サンプリングは昇順の網羅性を前提にしないため、
+    // 「自分より小さい値まで下がれば良い」ショートカットは使えず、
+    // 必ず真の検証済み閾値(22桁)まで下がることを確認する。
+    function testOneAbsolute(n) {
+      let v = n;
+      let steps = 0;
+      while (v >= THRESHOLD) {
+        v = jumpStep(v);
+        steps += JUMP_BITS;
+        if (steps > STEP_GUARD) return { anomaly: true, steps };
+      }
+      return { anomaly: false, steps };
+    }
+
+    function pickResidue() {
+      const target = Math.random() * total;
+      let lo = 0, hi = cumWeights.length - 1;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (cumWeights[mid] < target) lo = mid + 1; else hi = mid;
+      }
+      return residues[lo];
+    }
+
+    function randomBigIntWithBits(bits) {
+      const bytes = Math.ceil(bits / 8);
+      let hex = '';
+      for (let i = 0; i < bytes; i++) hex += Math.floor(Math.random() * 256).toString(16).padStart(2, '0');
+      let v = BigInt('0x' + (hex || '0'));
+      v &= (1n << BigInt(bits)) - 1n;
+      v |= (1n << BigInt(bits - 1)); // 桁数(ビット長)を安定させるため最上位ビットを立てる
+      return v;
+    }
+
+    function sampleOne() {
+      const r = BigInt(pickResidue());
+      const digits = MIN_DIGITS + Math.floor(Math.random() * (MAX_DIGITS - MIN_DIGITS + 1));
+      const bits = Math.max(Math.ceil(digits * Math.log2(10)) - JUMP_BITS, 1);
+      const m = randomBigIntWithBits(bits);
+      let n = r + m * (1n << BigInt(JUMP_BITS));
+      if (n % 2n === 0n) n += 1n;
+      if (n < THRESHOLD) n += THRESHOLD;
+      return n;
+    }
+
+    self.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === 'init') {
+        jumpA = new Uint32Array(msg.a);
+        jumpC = new Uint32Array(msg.c);
+        residues = new Uint32Array(msg.residues);
+        cumWeights = new Float64Array(msg.cumWeights);
+        total = msg.total;
+        self.postMessage({ type: 'ready' });
+        return;
+      }
+      if (msg.type !== 'batch') return;
+      const t0 = Date.now();
+      try {
+        let maxSteps = 0;
+        let lastN = null;
+        for (let i = 0; i < msg.count; i++) {
+          const n = sampleOne();
+          lastN = n;
+          const result = testOneAbsolute(n);
+          if (result.anomaly) {
+            self.postMessage({ type: 'anomaly', value: n.toString(), steps: result.steps });
+            return;
+          }
+          if (result.steps > maxSteps) maxSteps = result.steps;
+        }
+        self.postMessage({
+          type: 'batchDone',
+          processed: msg.count,
+          lastValue: lastN.toString(),
+          maxSteps,
+          batchTimeMs: Date.now() - t0
+        });
+      } catch (err) {
+        self.postMessage({ type: 'error', message: String(err && err.stack || err) });
+      }
+    };
+  `;
+
+  let workers = [];
+  let jumpTable = null;
+  let riskList = null;
+  let isRunning = false;
+  let cumulativeElapsedMs = 0;
+  let sampleCount = 0n;
+
+  function loadState() {
+    try {
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed.sampleCount === 'string' && /^[0-9]+$/.test(parsed.sampleCount)) {
+          sampleCount = BigInt(parsed.sampleCount);
+        }
+        if (parsed && typeof parsed.cumulativeElapsedMs === 'number' && parsed.cumulativeElapsedMs >= 0) {
+          cumulativeElapsedMs = parsed.cumulativeElapsedMs;
+        }
+      }
+    } catch (e) { /* ignore corrupt state */ }
+  }
+
+  function saveState() {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({
+      sampleCount: sampleCount.toString(),
+      cumulativeElapsedMs
+    }));
+  }
+
+  function updateDisplay() {
+    countEl.textContent = sampleCount.toLocaleString();
+    const rate = cumulativeElapsedMs > 0 ? (Number(sampleCount) / (cumulativeElapsedMs / 1000)) : 0;
+    rateEl.textContent = rate > 0 ? `${rate.toFixed(1)} 件/秒` : '-';
+  }
+
+  function handleAnomaly(msg) {
+    isRunning = false;
+    workers.forEach((w) => w.terminate());
+    workers = [];
+    statusEl.textContent = '要確認(異常検知)';
+    startBtn.disabled = false;
+    pauseBtn.disabled = true;
+    anomalyEl.style.display = 'block';
+    anomalyEl.textContent = `値 ${msg.value} が ${msg.steps} ステップ経過しても22桁未満に下がりませんでした。反例の可能性があるため自動停止しました。手動で確認してください。`;
+  }
+
+  function replaceWorker(deadWorker) {
+    const idx = workers.indexOf(deadWorker);
+    if (idx !== -1) workers.splice(idx, 1);
+    try { deadWorker.terminate(); } catch (e) { /* already dead */ }
+    if (!isRunning) return;
+    workers.push(createWorker());
+  }
+
+  function createWorker() {
+    const blob = new Blob([workerSrc], { type: 'application/javascript' });
+    const w = new Worker(URL.createObjectURL(blob));
+    w.onmessage = (e) => {
+      const msg = e.data;
+      if (msg.type === 'ready') {
+        requestBatch(w);
+      } else if (msg.type === 'batchDone') {
+        sampleCount += BigInt(msg.processed);
+        cumulativeElapsedMs += msg.batchTimeMs;
+        currentEl.textContent = msg.lastValue;
+        digitsEl.textContent = msg.lastValue.length;
+        maxStepsEl.textContent = msg.maxSteps.toLocaleString();
+        saveState();
+        updateDisplay();
+        requestBatch(w);
+      } else if (msg.type === 'anomaly') {
+        handleAnomaly(msg);
+      } else if (msg.type === 'error') {
+        console.error('Worker sample error, retrying:', msg.message);
+        replaceWorker(w);
+      }
+    };
+    w.onerror = (err) => {
+      console.error('Worker crashed, retrying:', err.message);
+      err.preventDefault && err.preventDefault();
+      replaceWorker(w);
+    };
+    const aCopy = jumpTable.a.slice();
+    const cCopy = jumpTable.c.slice();
+    w.postMessage({
+      type: 'init',
+      a: aCopy.buffer,
+      c: cCopy.buffer,
+      residues: riskList.residues.buffer.slice(0),
+      cumWeights: riskList.cumWeights.buffer.slice(0),
+      total: riskList.total
+    }, [aCopy.buffer, cCopy.buffer]);
+    return w;
+  }
+
+  function requestBatch(worker) {
+    if (!isRunning) return;
+    worker.postMessage({ type: 'batch', count: SAMPLE_BATCH });
+  }
+
+  function start() {
+    if (isRunning) return;
+    if (!jumpTable) jumpTable = buildJumpTable();
+    if (!riskList) riskList = buildRiskList(jumpTable);
+    isRunning = true;
+    statusEl.textContent = `実行中(${NUM_WORKERS}並列)`;
+    startBtn.disabled = true;
+    pauseBtn.disabled = false;
+    anomalyEl.style.display = 'none';
+    if (workers.length === 0) {
+      for (let i = 0; i < NUM_WORKERS; i++) workers.push(createWorker());
+    }
+    updateDisplay();
+  }
+
+  function pause() {
+    if (!isRunning) return;
+    isRunning = false;
+    workers.forEach((w) => w.terminate());
+    workers = [];
+    statusEl.textContent = '一時停止中';
+    startBtn.disabled = false;
+    pauseBtn.disabled = true;
+    updateDisplay();
+  }
+
+  function reset() {
+    pause();
+    sampleCount = 0n;
+    cumulativeElapsedMs = 0;
+    saveState();
+    updateDisplay();
+    rateEl.textContent = '-';
+    maxStepsEl.textContent = '-';
+    currentEl.textContent = '-';
+    digitsEl.textContent = '-';
+    statusEl.textContent = '停止中';
+    anomalyEl.style.display = 'none';
+  }
+
+  startBtn.addEventListener('click', start);
+  pauseBtn.addEventListener('click', pause);
+  resetBtn.addEventListener('click', reset);
+
+  loadState();
   updateDisplay();
 })();
 </script>
