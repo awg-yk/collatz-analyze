@@ -119,14 +119,6 @@
     max-height: 400px;
     overflow-y: auto;
   }
-  tr.current td {
-    background: rgba(56, 189, 248, 0.18);
-    color: #e0f2fe;
-    font-weight: 700;
-  }
-  tr.future td {
-    opacity: 0.35;
-  }
   select {
     background: var(--bg);
     border: 1px solid var(--border);
@@ -134,9 +126,6 @@
     padding: 8px 10px;
     border-radius: 6px;
     font-size: 0.95rem;
-  }
-  input[type="range"] {
-    accent-color: var(--accent);
   }
   button:disabled {
     opacity: 0.45;
@@ -171,29 +160,27 @@
   </div>
 
   <div class="panel" id="playback-panel" style="display:none;">
-    <h2>再生(1ステップずつ表示)</h2>
+    <h2>再生(開始値を1つずつ進める)</h2>
+    <p class="desc" style="margin-bottom:12px;">開始値を奇数で1つずつ進めながら(例: 27 → 29 → 31 → …)、そのつどコラッツ数列全体を計算してグラフ・表を更新します。数によって軌道の形がどう変わるかを見比べられます。</p>
     <div class="input-row">
       <button id="play-btn">再生</button>
       <button id="pause-btn" disabled>一時停止</button>
-      <button id="step-btn">1つ進む</button>
-      <button id="playback-reset-btn">最初から</button>
+      <button id="step-btn">次の開始値へ</button>
+      <button id="playback-reset-btn">入力値に戻す</button>
       <label for="speed">速度:</label>
       <select id="speed">
-        <option value="2000">0.5 ステップ/秒</option>
-        <option value="1000" selected>1 ステップ/秒</option>
-        <option value="500">2 ステップ/秒</option>
-        <option value="200">5 ステップ/秒</option>
-        <option value="50">20 ステップ/秒</option>
+        <option value="2000">0.5 件/秒</option>
+        <option value="1000" selected>1 件/秒</option>
+        <option value="500">2 件/秒</option>
+        <option value="200">5 件/秒</option>
+        <option value="50">20 件/秒</option>
       </select>
     </div>
-    <input type="range" id="scrubber" min="0" value="0" step="1" style="width:100%; margin-top:16px;">
-    <div class="stats" style="margin-top:8px;">
-      <div class="stat"><div class="label">現在のステップ</div><div class="value" id="play-step">0</div></div>
-      <div class="stat"><div class="label">偶数/奇数</div><div class="value" id="play-parity">-</div></div>
-      <div class="stat"><div class="label">次の操作</div><div class="value" id="play-op" style="font-size:0.95rem;">-</div></div>
+    <div class="stats" style="margin-top:16px;">
+      <div class="stat"><div class="label">再生した開始値の数</div><div class="value" id="play-count">0</div></div>
     </div>
     <div class="stat" style="margin-top:12px; width:100%; word-break: break-all;">
-      <div class="label">現在の値</div>
+      <div class="label">現在の開始値</div>
       <div class="value" id="play-value" style="font-size:1.1rem;">-</div>
     </div>
   </div>
@@ -228,14 +215,13 @@ function collatzSequence(n) {
   return seq;
 }
 
-// 現在表示中の数列と再生位置。グラフ・表・再生パネルはすべてこの状態を参照する。
+// 現在表示中の数列(開始値の軌道)。再生は「開始値そのもの」を1つずつ進める。
 let currentSeq = [];
-let currentIndex = 0;
+let currentStart = null; // BigInt
+let playedCount = 0;
 let playTimer = null;
 
-// upTo までの軌跡を描画する。軸のスケールは数列全体で固定しておき、
-// 再生中に目盛りが動かないようにする(値の伸び方を視覚的に比較しやすくするため)。
-function drawChart(canvas, seq, upTo) {
+function drawChart(canvas, seq) {
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -292,8 +278,8 @@ function drawChart(canvas, seq, upTo) {
     ctx.fillText(step, xScale(step), padding.top + plotH + 18);
   }
 
-  // これから通る軌跡を薄く描いておく(先の展開が分かるように)
-  ctx.strokeStyle = 'rgba(56, 189, 248, 0.18)';
+  // line
+  ctx.strokeStyle = '#38bdf8';
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   seq.forEach((v, i) => {
@@ -301,35 +287,6 @@ function drawChart(canvas, seq, upTo) {
     if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   });
   ctx.stroke();
-
-  // 再生済みの軌跡
-  ctx.strokeStyle = '#38bdf8';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  for (let i = 0; i <= upTo && i < seq.length; i++) {
-    const x = xScale(i), y = yScale(Number(seq[i]));
-    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
-
-  // 現在位置のマーカー
-  if (upTo >= 0 && upTo < seq.length) {
-    const x = xScale(upTo), y = yScale(Number(seq[upTo]));
-    ctx.strokeStyle = 'rgba(56, 189, 248, 0.35)';
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(x, padding.top);
-    ctx.lineTo(x, padding.top + plotH);
-    ctx.stroke();
-
-    ctx.fillStyle = (seq[upTo] % 2n === 0n) ? '#38bdf8' : '#fbbf24';
-    ctx.beginPath();
-    ctx.arc(x, y, 5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#0f172a';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-  }
 }
 
 // 巨大な値でも軸ラベルが破綻しないよう、大きい場合は指数表記にする。
@@ -339,11 +296,10 @@ function formatAxisValue(v) {
   return Math.round(v).toLocaleString();
 }
 
-function renderTable(tbody, seq, upTo) {
+function renderTable(tbody, seq) {
   const rows = seq.map((v, i) => {
     const parity = (v % 2n === 0n) ? '偶数' : '奇数';
-    const cls = i === upTo ? ' class="current"' : (i > upTo ? ' class="future"' : '');
-    return `<tr${cls}><td>${i}</td><td>${v.toString()}</td><td>${parity}</td></tr>`;
+    return `<tr><td>${i}</td><td>${v.toString()}</td><td>${parity}</td></tr>`;
   }).join('');
   tbody.innerHTML = rows;
 }
@@ -357,26 +313,25 @@ function countParity(seq) {
   return { even, odd };
 }
 
-// 再生位置に応じてグラフ・表・再生パネルの表示を更新する。
-function renderAtIndex(index) {
-  currentIndex = Math.max(0, Math.min(index, currentSeq.length - 1));
-  const v = currentSeq[currentIndex];
-  const isEven = v % 2n === 0n;
+// 指定した開始値 n のコラッツ数列を計算し、グラフ・表・統計をまとめて更新する。
+function renderForStart(n) {
+  currentStart = n;
+  currentSeq = collatzSequence(n);
+  const maxValBig = currentSeq.reduce((a, b) => (b > a ? b : a), currentSeq[0]);
 
-  document.getElementById('play-step').textContent = currentIndex.toLocaleString();
-  document.getElementById('play-value').textContent = v.toString();
-  document.getElementById('play-parity').textContent = isEven ? '偶数' : '奇数';
-  document.getElementById('play-op').textContent = (v === 1n)
-    ? '完了(1に到達)'
-    : (isEven ? 'n ÷ 2' : '3n + 1');
-  document.getElementById('scrubber').value = String(currentIndex);
+  document.getElementById('stat-steps').textContent = (currentSeq.length - 1).toLocaleString();
+  document.getElementById('stat-max').textContent = maxValBig.toString();
+  document.getElementById('stat-start').textContent = n.toString();
+  const { even, odd } = countParity(currentSeq);
+  document.getElementById('stat-even').textContent = even.toLocaleString();
+  document.getElementById('stat-odd').textContent = odd.toLocaleString();
+  document.getElementById('stats').style.display = 'flex';
 
-  drawChart(document.getElementById('chart'), currentSeq, currentIndex);
+  document.getElementById('play-value').textContent = n.toString();
+  document.getElementById('play-count').textContent = playedCount.toLocaleString();
 
-  const tbody = document.getElementById('table-body');
-  renderTable(tbody, currentSeq, currentIndex);
-  const row = tbody.children[currentIndex];
-  if (row) row.scrollIntoView({ block: 'nearest' });
+  drawChart(document.getElementById('chart'), currentSeq);
+  renderTable(document.getElementById('table-body'), currentSeq);
 }
 
 function stopPlayback() {
@@ -388,19 +343,18 @@ function stopPlayback() {
   document.getElementById('pause-btn').disabled = true;
 }
 
+// 現在の開始値の次の奇数へ進める(例: 27 → 29 → 31 → …)。
+function advanceToNextStart() {
+  playedCount++;
+  renderForStart(currentStart + 2n);
+}
+
 function startPlayback() {
-  if (playTimer || currentSeq.length === 0) return;
-  if (currentIndex >= currentSeq.length - 1) renderAtIndex(0);
+  if (playTimer || currentStart === null) return;
   const interval = Number(document.getElementById('speed').value);
   document.getElementById('play-btn').disabled = true;
   document.getElementById('pause-btn').disabled = false;
-  playTimer = setInterval(() => {
-    if (currentIndex >= currentSeq.length - 1) {
-      stopPlayback();
-      return;
-    }
-    renderAtIndex(currentIndex + 1);
-  }, interval);
+  playTimer = setInterval(advanceToNextStart, interval);
 }
 
 function run() {
@@ -420,23 +374,9 @@ function run() {
   }
 
   stopPlayback();
-
-  const n = BigInt(raw);
-  currentSeq = collatzSequence(n);
-  const maxValBig = currentSeq.reduce((a, b) => (b > a ? b : a), currentSeq[0]);
-
-  document.getElementById('stat-steps').textContent = (currentSeq.length - 1).toLocaleString();
-  document.getElementById('stat-max').textContent = maxValBig.toString();
-  document.getElementById('stat-start').textContent = n.toString();
-  const { even, odd } = countParity(currentSeq);
-  document.getElementById('stat-even').textContent = even.toLocaleString();
-  document.getElementById('stat-odd').textContent = odd.toLocaleString();
-  statsEl.style.display = 'flex';
-
+  playedCount = 0;
   document.getElementById('playback-panel').style.display = 'block';
-  const scrubber = document.getElementById('scrubber');
-  scrubber.max = String(currentSeq.length - 1);
-  renderAtIndex(0);
+  renderForStart(BigInt(raw));
 }
 
 document.getElementById('run-btn').addEventListener('click', run);
@@ -447,15 +387,11 @@ document.getElementById('play-btn').addEventListener('click', startPlayback);
 document.getElementById('pause-btn').addEventListener('click', stopPlayback);
 document.getElementById('step-btn').addEventListener('click', () => {
   stopPlayback();
-  renderAtIndex(currentIndex + 1);
+  advanceToNextStart();
 });
 document.getElementById('playback-reset-btn').addEventListener('click', () => {
   stopPlayback();
-  renderAtIndex(0);
-});
-document.getElementById('scrubber').addEventListener('input', (e) => {
-  stopPlayback();
-  renderAtIndex(Number(e.target.value));
+  run();
 });
 // 再生中に速度を変えたら、その場で新しい間隔に切り替える
 document.getElementById('speed').addEventListener('change', () => {
@@ -465,7 +401,7 @@ document.getElementById('speed').addEventListener('change', () => {
   }
 });
 window.addEventListener('resize', () => {
-  if (currentSeq.length > 0) drawChart(document.getElementById('chart'), currentSeq, currentIndex);
+  if (currentSeq.length > 0) drawChart(document.getElementById('chart'), currentSeq);
 });
 
 run();
