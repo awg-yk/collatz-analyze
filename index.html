@@ -119,6 +119,29 @@
     max-height: 400px;
     overflow-y: auto;
   }
+  tr.current td {
+    background: rgba(56, 189, 248, 0.18);
+    color: #e0f2fe;
+    font-weight: 700;
+  }
+  tr.future td {
+    opacity: 0.35;
+  }
+  select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px 10px;
+    border-radius: 6px;
+    font-size: 0.95rem;
+  }
+  input[type="range"] {
+    accent-color: var(--accent);
+  }
+  button:disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
   h2 {
     font-size: 1.05rem;
     margin-top: 0;
@@ -147,6 +170,34 @@
     </div>
   </div>
 
+  <div class="panel" id="playback-panel" style="display:none;">
+    <h2>再生(1ステップずつ表示)</h2>
+    <div class="input-row">
+      <button id="play-btn">再生</button>
+      <button id="pause-btn" disabled>一時停止</button>
+      <button id="step-btn">1つ進む</button>
+      <button id="playback-reset-btn">最初から</button>
+      <label for="speed">速度:</label>
+      <select id="speed">
+        <option value="2000">0.5 ステップ/秒</option>
+        <option value="1000" selected>1 ステップ/秒</option>
+        <option value="500">2 ステップ/秒</option>
+        <option value="200">5 ステップ/秒</option>
+        <option value="50">20 ステップ/秒</option>
+      </select>
+    </div>
+    <input type="range" id="scrubber" min="0" value="0" step="1" style="width:100%; margin-top:16px;">
+    <div class="stats" style="margin-top:8px;">
+      <div class="stat"><div class="label">現在のステップ</div><div class="value" id="play-step">0</div></div>
+      <div class="stat"><div class="label">偶数/奇数</div><div class="value" id="play-parity">-</div></div>
+      <div class="stat"><div class="label">次の操作</div><div class="value" id="play-op" style="font-size:0.95rem;">-</div></div>
+    </div>
+    <div class="stat" style="margin-top:12px; width:100%; word-break: break-all;">
+      <div class="label">現在の値</div>
+      <div class="value" id="play-value" style="font-size:1.1rem;">-</div>
+    </div>
+  </div>
+
   <div class="panel">
     <h2>グラフ (試行回数 vs 値)</h2>
     <canvas id="chart"></canvas>
@@ -164,62 +215,6 @@
     </div>
   </div>
 
-  <div class="panel">
-    <h2>自動探索モード(23桁以上・奇数のみ、22桁未満に落ちたら次へ)</h2>
-    <p class="desc" style="margin-bottom:12px;">22桁までは反例が無いことが確認済みという前提で、23桁最小の奇数から昇順(+2)に検証します。各数値は 22 桁未満まで下がった時点で「検証済み範囲に到達」として打ち切り、次の奇数に進みます。複数の Web Worker を並列実行し、mod 2^16 の事前計算テーブルで一度に16ステップずつ進めることで高速化しています。ブラウザタブを開いている間バックグラウンドで処理を続け、進捗はこの端末に自動保存されます(一時停止/再読み込み時、直前に各Workerへ割り当て済みだが未完了のチャンクは再検証対象から漏れる場合があります)。</p>
-    <div class="input-row">
-      <button id="auto-start-btn">開始 / 再開</button>
-      <button id="auto-pause-btn" disabled>一時停止</button>
-      <button id="auto-reset-btn">リセット</button>
-    </div>
-    <div class="stats" style="margin-top:16px;">
-      <div class="stat"><div class="label">状態</div><div class="value" id="auto-status">停止中</div></div>
-      <div class="stat"><div class="label">並列Worker数</div><div class="value" id="auto-workers">-</div></div>
-      <div class="stat"><div class="label">処理済み件数</div><div class="value" id="auto-count">0</div></div>
-      <div class="stat"><div class="label">処理速度</div><div class="value" id="auto-rate">-</div></div>
-    </div>
-    <div class="stat" style="margin-top:12px; width:100%; word-break: break-all;">
-      <div class="label">次に割り当てる開始値(フロンティア、桁数: <span id="auto-digits">-</span>)</div>
-      <div class="value" id="auto-current" style="font-size:0.95rem;">-</div>
-    </div>
-    <div class="stat" style="margin-top:12px;">
-      <div class="label">最終更新</div>
-      <div class="value" id="auto-lastupdate" style="font-size:0.95rem;">-</div>
-    </div>
-    <div id="auto-anomaly" class="error" style="display:none; margin-top:12px; font-weight:700;"></div>
-  </div>
-
-  <div class="panel">
-    <h2>統計的優先探索(非網羅・案4)</h2>
-    <p class="desc" style="margin-bottom:12px;">
-      上の網羅モードとは別の、確率的な補助探索です。Tao(2019)の密度定理が示す
-      「ほとんどの軌道はほぼ有界な値に落ちる」という結果を踏まえ、mod 2^20 の
-      ジャンプテーブルから「20ステップ進めても値があまり縮まない(成長率が高い)」
-      統計的にリスクの高い剰余類を重み付きで優先的にサンプリングします。
-      桁数もランダムに変えながら(23〜60桁程度)非網羅的に探索するため、
-      「反例が存在しないことの証明」にはなりません。あくまで限られた計算資源で
-      反例を早く見つけられる可能性を高めるための補助的な探索です。
-      昇順の網羅性を前提にしないため、上のモードで使っている
-      「自分より小さい値まで下がったら終了」というショートカットは使えず、
-      毎回22桁(10^22)未満まで確認します。
-    </p>
-    <div class="input-row">
-      <button id="sample-start-btn">開始 / 再開</button>
-      <button id="sample-pause-btn" disabled>一時停止</button>
-      <button id="sample-reset-btn">リセット</button>
-    </div>
-    <div class="stats" style="margin-top:16px;">
-      <div class="stat"><div class="label">状態</div><div class="value" id="sample-status">停止中</div></div>
-      <div class="stat"><div class="label">サンプル数</div><div class="value" id="sample-count">0</div></div>
-      <div class="stat"><div class="label">処理速度</div><div class="value" id="sample-rate">-</div></div>
-      <div class="stat"><div class="label">今回の最大ステップ数</div><div class="value" id="sample-maxsteps">-</div></div>
-    </div>
-    <div class="stat" style="margin-top:12px; width:100%; word-break: break-all;">
-      <div class="label">直近のサンプル値(桁数: <span id="sample-digits">-</span>)</div>
-      <div class="value" id="sample-current" style="font-size:0.95rem;">-</div>
-    </div>
-    <div id="sample-anomaly" class="error" style="display:none; margin-top:12px; font-weight:700;"></div>
-  </div>
 </div>
 
 <script>
@@ -233,7 +228,14 @@ function collatzSequence(n) {
   return seq;
 }
 
-function drawChart(canvas, seq) {
+// 現在表示中の数列と再生位置。グラフ・表・再生パネルはすべてこの状態を参照する。
+let currentSeq = [];
+let currentIndex = 0;
+let playTimer = null;
+
+// upTo までの軌跡を描画する。軸のスケールは数列全体で固定しておき、
+// 再生中に目盛りが動かないようにする(値の伸び方を視覚的に比較しやすくするため)。
+function drawChart(canvas, seq, upTo) {
   const ctx = canvas.getContext('2d');
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -243,8 +245,9 @@ function drawChart(canvas, seq) {
 
   const w = rect.width, h = rect.height;
   ctx.clearRect(0, 0, w, h);
+  if (seq.length === 0) return;
 
-  const padding = { top: 20, right: 20, bottom: 30, left: 60 };
+  const padding = { top: 20, right: 20, bottom: 30, left: 70 };
   const plotW = w - padding.left - padding.right;
   const plotH = h - padding.top - padding.bottom;
 
@@ -264,7 +267,7 @@ function drawChart(canvas, seq) {
   ctx.lineTo(padding.left + plotW, padding.top + plotH);
   ctx.stroke();
 
-  // y labels
+  // y labels + grid
   ctx.fillStyle = '#94a3b8';
   ctx.font = '11px sans-serif';
   ctx.textAlign = 'right';
@@ -272,7 +275,7 @@ function drawChart(canvas, seq) {
   for (let t = 0; t <= yTicks; t++) {
     const v = (maxVal * t) / yTicks;
     const y = yScale(v);
-    ctx.fillText(Math.round(v).toLocaleString(), padding.left - 8, y + 3);
+    ctx.fillText(formatAxisValue(v), padding.left - 8, y + 3);
     ctx.strokeStyle = 'rgba(51,65,85,0.4)';
     ctx.beginPath();
     ctx.moveTo(padding.left, y);
@@ -282,30 +285,65 @@ function drawChart(canvas, seq) {
 
   // x labels
   ctx.textAlign = 'center';
+  ctx.fillStyle = '#94a3b8';
   const xTicks = Math.min(10, maxStep);
   for (let t = 0; t <= xTicks; t++) {
-    const step = Math.round((maxStep * t) / xTicks);
-    const x = xScale(step);
-    ctx.fillText(step, x, padding.top + plotH + 18);
+    const step = Math.round((maxStep * t) / (xTicks || 1));
+    ctx.fillText(step, xScale(step), padding.top + plotH + 18);
   }
 
-  // line
-  ctx.strokeStyle = '#38bdf8';
+  // これから通る軌跡を薄く描いておく(先の展開が分かるように)
+  ctx.strokeStyle = 'rgba(56, 189, 248, 0.18)';
   ctx.lineWidth = 1.5;
   ctx.beginPath();
   seq.forEach((v, i) => {
-    const x = xScale(i);
-    const y = yScale(Number(v));
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
+    const x = xScale(i), y = yScale(Number(v));
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
   });
   ctx.stroke();
+
+  // 再生済みの軌跡
+  ctx.strokeStyle = '#38bdf8';
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i <= upTo && i < seq.length; i++) {
+    const x = xScale(i), y = yScale(Number(seq[i]));
+    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+  }
+  ctx.stroke();
+
+  // 現在位置のマーカー
+  if (upTo >= 0 && upTo < seq.length) {
+    const x = xScale(upTo), y = yScale(Number(seq[upTo]));
+    ctx.strokeStyle = 'rgba(56, 189, 248, 0.35)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, padding.top);
+    ctx.lineTo(x, padding.top + plotH);
+    ctx.stroke();
+
+    ctx.fillStyle = (seq[upTo] % 2n === 0n) ? '#38bdf8' : '#fbbf24';
+    ctx.beginPath();
+    ctx.arc(x, y, 5, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.strokeStyle = '#0f172a';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
 }
 
-function renderTable(tbody, seq) {
+// 巨大な値でも軸ラベルが破綻しないよう、大きい場合は指数表記にする。
+function formatAxisValue(v) {
+  if (!isFinite(v)) return '-';
+  if (v >= 1e15) return v.toExponential(1);
+  return Math.round(v).toLocaleString();
+}
+
+function renderTable(tbody, seq, upTo) {
   const rows = seq.map((v, i) => {
     const parity = (v % 2n === 0n) ? '偶数' : '奇数';
-    return `<tr><td>${i}</td><td>${v.toString()}</td><td>${parity}</td></tr>`;
+    const cls = i === upTo ? ' class="current"' : (i > upTo ? ' class="future"' : '');
+    return `<tr${cls}><td>${i}</td><td>${v.toString()}</td><td>${parity}</td></tr>`;
   }).join('');
   tbody.innerHTML = rows;
 }
@@ -317,6 +355,52 @@ function countParity(seq) {
     else odd++;
   }
   return { even, odd };
+}
+
+// 再生位置に応じてグラフ・表・再生パネルの表示を更新する。
+function renderAtIndex(index) {
+  currentIndex = Math.max(0, Math.min(index, currentSeq.length - 1));
+  const v = currentSeq[currentIndex];
+  const isEven = v % 2n === 0n;
+
+  document.getElementById('play-step').textContent = currentIndex.toLocaleString();
+  document.getElementById('play-value').textContent = v.toString();
+  document.getElementById('play-parity').textContent = isEven ? '偶数' : '奇数';
+  document.getElementById('play-op').textContent = (v === 1n)
+    ? '完了(1に到達)'
+    : (isEven ? 'n ÷ 2' : '3n + 1');
+  document.getElementById('scrubber').value = String(currentIndex);
+
+  drawChart(document.getElementById('chart'), currentSeq, currentIndex);
+
+  const tbody = document.getElementById('table-body');
+  renderTable(tbody, currentSeq, currentIndex);
+  const row = tbody.children[currentIndex];
+  if (row) row.scrollIntoView({ block: 'nearest' });
+}
+
+function stopPlayback() {
+  if (playTimer) {
+    clearInterval(playTimer);
+    playTimer = null;
+  }
+  document.getElementById('play-btn').disabled = false;
+  document.getElementById('pause-btn').disabled = true;
+}
+
+function startPlayback() {
+  if (playTimer || currentSeq.length === 0) return;
+  if (currentIndex >= currentSeq.length - 1) renderAtIndex(0);
+  const interval = Number(document.getElementById('speed').value);
+  document.getElementById('play-btn').disabled = true;
+  document.getElementById('pause-btn').disabled = false;
+  playTimer = setInterval(() => {
+    if (currentIndex >= currentSeq.length - 1) {
+      stopPlayback();
+      return;
+    }
+    renderAtIndex(currentIndex + 1);
+  }, interval);
 }
 
 function run() {
@@ -331,700 +415,61 @@ function run() {
     errorEl.textContent = '1以上の整数を入力してください(桁数の制限はありません)。';
     errorEl.style.display = 'block';
     statsEl.style.display = 'none';
+    document.getElementById('playback-panel').style.display = 'none';
     return;
   }
 
-  const n = BigInt(raw);
-  const seq = collatzSequence(n);
-  const maxValBig = seq.reduce((a, b) => (b > a ? b : a), seq[0]);
+  stopPlayback();
 
-  document.getElementById('stat-steps').textContent = (seq.length - 1).toLocaleString();
+  const n = BigInt(raw);
+  currentSeq = collatzSequence(n);
+  const maxValBig = currentSeq.reduce((a, b) => (b > a ? b : a), currentSeq[0]);
+
+  document.getElementById('stat-steps').textContent = (currentSeq.length - 1).toLocaleString();
   document.getElementById('stat-max').textContent = maxValBig.toString();
   document.getElementById('stat-start').textContent = n.toString();
-  const { even, odd } = countParity(seq);
+  const { even, odd } = countParity(currentSeq);
   document.getElementById('stat-even').textContent = even.toLocaleString();
   document.getElementById('stat-odd').textContent = odd.toLocaleString();
   statsEl.style.display = 'flex';
 
-  drawChart(document.getElementById('chart'), seq);
-  renderTable(document.getElementById('table-body'), seq);
+  document.getElementById('playback-panel').style.display = 'block';
+  const scrubber = document.getElementById('scrubber');
+  scrubber.max = String(currentSeq.length - 1);
+  renderAtIndex(0);
 }
 
 document.getElementById('run-btn').addEventListener('click', run);
 document.getElementById('start-number').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') run();
 });
+document.getElementById('play-btn').addEventListener('click', startPlayback);
+document.getElementById('pause-btn').addEventListener('click', stopPlayback);
+document.getElementById('step-btn').addEventListener('click', () => {
+  stopPlayback();
+  renderAtIndex(currentIndex + 1);
+});
+document.getElementById('playback-reset-btn').addEventListener('click', () => {
+  stopPlayback();
+  renderAtIndex(0);
+});
+document.getElementById('scrubber').addEventListener('input', (e) => {
+  stopPlayback();
+  renderAtIndex(Number(e.target.value));
+});
+// 再生中に速度を変えたら、その場で新しい間隔に切り替える
+document.getElementById('speed').addEventListener('change', () => {
+  if (playTimer) {
+    stopPlayback();
+    startPlayback();
+  }
+});
 window.addEventListener('resize', () => {
-  const seqLen = document.getElementById('table-body').children.length;
-  if (seqLen > 0) run();
+  if (currentSeq.length > 0) drawChart(document.getElementById('chart'), currentSeq, currentIndex);
 });
 
 run();
 
-// ---- 自動探索モード ----
-(function () {
-  const STORAGE_KEY = 'collatzAutoSearchProgress';
-  const DIGIT_THRESHOLD = 22; // これ未満の桁数までは既に反例が無いと確認済み
-  const DEFAULT_START = (10n ** BigInt(DIGIT_THRESHOLD)) + 1n; // 23桁最小の奇数
-  const JUMP_BITS = 20; // mod 2^20 の事前計算テーブルで一度に進めるステップ数(B-1)
-  const CHUNK_SIZE = 2000; // 1チャンクあたりに検証する奇数の個数
-  // Rust製 WebAssembly モジュール(B-3)。u128固定長演算でジャンプ計算を高速化する。
-  // ソース: src/lib.rs (cargo build --release --target wasm32-unknown-unknown)。
-  // JS版のジャンプテーブルと数値的に完全一致することを検証済み(20,000件で不一致0件)。
-  const WASM_B64 = 'AGFzbQEAAAABEwNgAAF/YAJ+fgF+YAV/fn5+fgADBgUAAAABAgQFAXABAQEFBAEAkAEGGQN/AUGAgMAAC38AQYCAwAQLfwBBgIDABAsHWAcGbWVtb3J5AgALdGFibGVfYV9wdHIAAAt0YWJsZV9jX3B0cgABCXRhYmxlX2xlbgACCHRlc3Rfb25lAAMKX19kYXRhX2VuZAMBC19faGVhcF9iYXNlAwIKiwMFCABBgIDAgAALCABBgIDAggALBwBBgIDAAAv/AQQCfwN+AX8CfiOAgICAAEEgayICJICAgIAAQQAhAyABIQQgACEFAkADQAJAIAQgAVogBSAAWiAFIABRGw0AIAOtIQYMAgsgAiAFQhSIQgAgBKdB//8/cUECdCIHNQKAgMCAACIIQgAQhICAgAAgAkEQaiAIQgAgBEIUiCAFQiyGhEIAEISAgIAAQn8hBiACKQMIQgBSIAIpAxgiBSACKQMAfCIIIAVUcg0BIAIpAxAiCSAHNQKAgMCCAHwiBCAJVCIHIAggB618IgUgCFQgBCAJWhsNASADQeyI+gBLIQcgA0EUaiEDIAdFDQALQn4hBgsgAkEgaiSAgICAACAGC24BBn4gACADQv////8PgyIFIAFC/////w+DIgZ+IgcgA0IgiCIIIAZ+IgYgBSABQiCIIgl+fCIFQiCGfCIKNwMAIAAgCCAJfiAFIAZUrUIghiAFQiCIhHwgCiAHVK18IAQgAX4gAyACfnx8NwMICwBpBG5hbWUAEhFjb2xsYXR6X3dhc20ud2FzbQE6BQALdGFibGVfYV9wdHIBC3RhYmxlX2NfcHRyAgl0YWJsZV9sZW4DCHRlc3Rfb25lBAhfX211bHRpMwcSAQAPX19zdGFja19wb2ludGVyAE0JcHJvZHVjZXJzAghsYW5ndWFnZQEEUnVzdAAMcHJvY2Vzc2VkLWJ5AQVydXN0Yx0xLjk0LjEgKGU0MDg5NDdiZiAyMDI2LTAzLTI1KQCUAQ90YXJnZXRfZmVhdHVyZXMIKwtidWxrLW1lbW9yeSsPYnVsay1tZW1vcnktb3B0KxZjYWxsLWluZGlyZWN0LW92ZXJsb25nKwptdWx0aXZhbHVlKw9tdXRhYmxlLWdsb2JhbHMrE25vbnRyYXBwaW5nLWZwdG9pbnQrD3JlZmVyZW5jZS10eXBlcysIc2lnbi1leHQ=';
-  const NUM_WORKERS = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 8));
-
-  const startBtn = document.getElementById('auto-start-btn');
-  const pauseBtn = document.getElementById('auto-pause-btn');
-  const resetBtn = document.getElementById('auto-reset-btn');
-  const statusEl = document.getElementById('auto-status');
-  const workersEl = document.getElementById('auto-workers');
-  const countEl = document.getElementById('auto-count');
-  const rateEl = document.getElementById('auto-rate');
-  const currentEl = document.getElementById('auto-current');
-  const digitsEl = document.getElementById('auto-digits');
-  const anomalyEl = document.getElementById('auto-anomaly');
-  const lastUpdateEl = document.getElementById('auto-lastupdate');
-
-  // ジャンプテーブル(mod 2^JUMP_BITS の事前計算)はメインスレッドで1回だけ構築し、
-  // 各Workerには構築済みのバイナリ(Uint32Array)をコピー転送する(B-2)。
-  // aとcはK=20では高々6^(K/2)程度に収まり32bitに収まることを確認済み。
-  // 値は「奇数ショートカット」を含む一般化として、偶数/奇数どちらでも
-  // JUMP_BITS ステップ分の遷移を線形変換 a*m+c (m = v >> JUMP_BITS) で表す。
-  function buildJumpTable() {
-    const size = 1 << JUMP_BITS;
-    const a = new Uint32Array(size);
-    const c = new Uint32Array(size);
-    const baseA = 1 << JUMP_BITS;
-    for (let r = 0; r < size; r++) {
-      let cc = r, aa = baseA;
-      for (let t = 0; t < JUMP_BITS; t++) {
-        if (cc % 2 === 0) { cc = cc / 2; aa = aa / 2; }
-        else { cc = 3 * cc + 1; aa = 3 * aa; }
-      }
-      a[r] = aa;
-      c[r] = cc;
-    }
-    return { a, c };
-  }
-
-  // Worker本体: メインスレッドから受け取ったジャンプテーブルを使い、
-  // 割り当てられたチャンク(開始値+個数)内の奇数を1つずつ検証する。
-  // 可能なら WebAssembly(Rust製・u128固定長演算, B-3)を使い、
-  // u128の範囲を超える恐れがある場合(-1が返る)のみ JS の BigInt 経路にフォールバックする。
-  const workerSrc = `
-    const JUMP_BITS = ${JUMP_BITS};
-    const STEP_GUARD = 2000000;
-    const MASK = (1n << BigInt(JUMP_BITS)) - 1n;
-    const WASM_B64 = "${WASM_B64}";
-    let jumpA = null, jumpC = null;
-    let wasmTestOne = null;
-
-    function jumpStepJS(v) {
-      const r = Number(v & MASK);
-      const m = v >> BigInt(JUMP_BITS);
-      return BigInt(jumpA[r]) * m + BigInt(jumpC[r]);
-    }
-
-    // 強い形の帰納法: 昇順に検証しているので、軌道が「自分自身より小さい値」まで
-    // 下がった時点で打ち切ってよい(その小さい値は22桁未満まで既に確定済みか、
-    // まだ22桁以上でもいずれ同じ規則で検証される、より小さい出発点だから)。
-    // これは THRESHOLD(22桁)まで下がるのを待つより大幅に緩い条件になる。
-    function testOneJS(n) {
-      let v = n;
-      let steps = 0;
-      while (v >= n) {
-        v = jumpStepJS(v);
-        steps += JUMP_BITS;
-        if (steps > STEP_GUARD) return { anomaly: true, steps };
-      }
-      return { anomaly: false, steps };
-    }
-
-    function testOne(n) {
-      if (wasmTestOne) {
-        const hi = BigInt.asUintN(64, n >> 64n);
-        const lo = BigInt.asUintN(64, n);
-        const r = Number(wasmTestOne(hi, lo));
-        if (r === -2) return { anomaly: true, steps: STEP_GUARD };
-        if (r >= 0) return { anomaly: false, steps: r };
-        // r === -1: u128をオーバーフローする可能性があり、この数だけJSのBigInt経路で再計算する
-      }
-      return testOneJS(n);
-    }
-
-    function initWasm() {
-      if (typeof WebAssembly === 'undefined') return Promise.resolve();
-      try {
-        const binary = atob(WASM_B64);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-        return WebAssembly.instantiate(bytes, {}).then(({ instance }) => {
-          const { memory, table_a_ptr, table_c_ptr, table_len, test_one } = instance.exports;
-          const len = table_len();
-          if (len !== jumpA.length) throw new Error('wasm table size mismatch');
-          new Uint32Array(memory.buffer, table_a_ptr(), len).set(jumpA);
-          new Uint32Array(memory.buffer, table_c_ptr(), len).set(jumpC);
-          wasmTestOne = test_one;
-        }).catch((err) => {
-          console.error('WASM init failed, falling back to JS:', err);
-          wasmTestOne = null;
-        });
-      } catch (err) {
-        console.error('WASM init failed, falling back to JS:', err);
-        return Promise.resolve();
-      }
-    }
-
-    self.onmessage = (e) => {
-      const msg = e.data;
-      if (msg.type === 'init') {
-        jumpA = new Uint32Array(msg.a);
-        jumpC = new Uint32Array(msg.c);
-        initWasm().finally(() => self.postMessage({ type: 'ready' }));
-        return;
-      }
-      if (msg.type !== 'chunk') return;
-      const t0 = Date.now();
-      try {
-        let n = BigInt(msg.start);
-        const count = msg.count;
-        for (let i = 0; i < count; i++) {
-          const result = testOne(n);
-          if (result.anomaly) {
-            self.postMessage({ type: 'anomaly', value: n.toString(), steps: result.steps });
-            return;
-          }
-          n += 2n;
-        }
-        self.postMessage({
-          type: 'chunkDone',
-          processed: count,
-          lastValue: n.toString(),
-          batchTimeMs: Date.now() - t0
-        });
-      } catch (err) {
-        self.postMessage({ type: 'error', message: String(err && err.stack || err), chunk: msg });
-      }
-    };
-  `;
-
-  let workers = [];
-  let state = loadState();
-  let cumulativeElapsedMs = state.cumulativeElapsedMs || 0;
-  let isRunning = false;
-  let lastUpdateTime = null;
-  let staleTimer = null;
-  let jumpTable = null; // { a: Uint32Array, c: Uint32Array }, built lazily once on first start()
-
-  function defaultState() {
-    return {
-      nextChunkStart: DEFAULT_START.toString(),
-      processedCount: '0',
-      cumulativeElapsedMs: 0
-    };
-  }
-
-  function isValidOddDecimal(s) {
-    return typeof s === 'string' && /^[0-9]+$/.test(s) && BigInt(s) % 2n === 1n;
-  }
-
-  function loadState() {
-    let parsed = null;
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) parsed = JSON.parse(raw);
-    } catch (e) { /* ignore corrupt state */ }
-    if (!parsed || typeof parsed !== 'object') return defaultState();
-
-    // 旧バージョン(単一Worker版)は `current` というキー名だった。移行する。
-    if (parsed.nextChunkStart === undefined && typeof parsed.current === 'string') {
-      parsed.nextChunkStart = parsed.current;
-    }
-
-    const result = defaultState();
-    if (isValidOddDecimal(parsed.nextChunkStart)) result.nextChunkStart = parsed.nextChunkStart;
-    if (typeof parsed.processedCount === 'string' && /^[0-9]+$/.test(parsed.processedCount)) {
-      result.processedCount = parsed.processedCount;
-    }
-    if (typeof parsed.cumulativeElapsedMs === 'number' && parsed.cumulativeElapsedMs >= 0) {
-      result.cumulativeElapsedMs = parsed.cumulativeElapsedMs;
-    }
-    return result;
-  }
-
-  function saveState() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  }
-
-  function updateDisplay() {
-    workersEl.textContent = isRunning ? `${NUM_WORKERS}` : `${NUM_WORKERS}(待機中)`;
-    countEl.textContent = BigInt(state.processedCount).toLocaleString();
-    currentEl.textContent = state.nextChunkStart;
-    digitsEl.textContent = state.nextChunkStart.length;
-    const rate = cumulativeElapsedMs > 0
-      ? (Number(BigInt(state.processedCount)) / (cumulativeElapsedMs / 1000))
-      : 0;
-    rateEl.textContent = rate > 0 ? `${rate.toFixed(1)} 件/秒` : '-';
-  }
-
-  function assignChunk(worker) {
-    if (!isRunning) return;
-    const chunkStart = BigInt(state.nextChunkStart);
-    state.nextChunkStart = (chunkStart + BigInt(CHUNK_SIZE) * 2n).toString();
-    saveState();
-    updateDisplay();
-    dispatchChunk(worker, { start: chunkStart.toString(), count: CHUNK_SIZE });
-  }
-
-  function dispatchChunk(worker, chunk) {
-    worker.currentChunk = chunk;
-    worker.postMessage({ type: 'chunk', start: chunk.start, count: chunk.count });
-  }
-
-  function markUpdated() {
-    lastUpdateTime = Date.now();
-  }
-
-  function tickStaleness() {
-    if (!lastUpdateTime) {
-      lastUpdateEl.textContent = '-';
-      return;
-    }
-    const secs = Math.floor((Date.now() - lastUpdateTime) / 1000);
-    lastUpdateEl.textContent = secs < 2 ? 'たった今' : `${secs}秒前`;
-    if (isRunning && secs > 30) {
-      lastUpdateEl.style.color = '#f87171';
-      lastUpdateEl.textContent += '(停止している可能性があります)';
-    } else {
-      lastUpdateEl.style.color = '';
-    }
-  }
-
-  function handleAnomaly(msg) {
-    isRunning = false;
-    workers.forEach((w) => w.terminate());
-    workers = [];
-    statusEl.textContent = '要確認(異常検知)';
-    startBtn.disabled = false;
-    pauseBtn.disabled = true;
-    anomalyEl.style.display = 'block';
-    anomalyEl.textContent = `値 ${msg.value} が ${msg.steps} ステップ経過しても22桁未満に下がりませんでした。反例の可能性があるため自動停止しました。手動で確認してください。`;
-    if (staleTimer) { clearInterval(staleTimer); staleTimer = null; }
-  }
-
-  function replaceWorker(deadWorker) {
-    const idx = workers.indexOf(deadWorker);
-    if (idx !== -1) workers.splice(idx, 1);
-    try { deadWorker.terminate(); } catch (e) { /* already dead */ }
-    if (!isRunning) return;
-    const replacement = createWorker(deadWorker.currentChunk || null);
-    workers.push(replacement);
-  }
-
-  function createWorker(retryChunk) {
-    const blob = new Blob([workerSrc], { type: 'application/javascript' });
-    const w = new Worker(URL.createObjectURL(blob));
-    w.currentChunk = null;
-    w.onmessage = (e) => {
-      const msg = e.data;
-      if (msg.type === 'ready') {
-        if (retryChunk) {
-          dispatchChunk(w, retryChunk);
-        } else {
-          assignChunk(w);
-        }
-        return;
-      }
-      if (msg.type === 'chunkDone') {
-        w.currentChunk = null;
-        state.processedCount = (BigInt(state.processedCount) + BigInt(msg.processed)).toString();
-        cumulativeElapsedMs += msg.batchTimeMs;
-        state.cumulativeElapsedMs = cumulativeElapsedMs;
-        saveState();
-        markUpdated();
-        updateDisplay();
-        assignChunk(w);
-      } else if (msg.type === 'anomaly') {
-        handleAnomaly(msg);
-      } else if (msg.type === 'error') {
-        console.error('Worker chunk error, retrying:', msg.message);
-        replaceWorker(w);
-      }
-    };
-    w.onerror = (err) => {
-      console.error('Worker crashed, retrying:', err.message);
-      err.preventDefault && err.preventDefault();
-      replaceWorker(w);
-    };
-    // ジャンプテーブルは1回構築したものを各Workerへコピーして転送する(B-2)。
-    const aCopy = jumpTable.a.slice();
-    const cCopy = jumpTable.c.slice();
-    w.postMessage({ type: 'init', a: aCopy.buffer, c: cCopy.buffer }, [aCopy.buffer, cCopy.buffer]);
-    return w;
-  }
-
-  function start() {
-    if (isRunning) return;
-    if (!jumpTable) jumpTable = buildJumpTable();
-    isRunning = true;
-    statusEl.textContent = `実行中(${NUM_WORKERS}並列)`;
-    startBtn.disabled = true;
-    pauseBtn.disabled = false;
-    anomalyEl.style.display = 'none';
-    if (workers.length === 0) {
-      for (let i = 0; i < NUM_WORKERS; i++) workers.push(createWorker());
-    }
-    markUpdated();
-    updateDisplay();
-    if (!staleTimer) staleTimer = setInterval(tickStaleness, 1000);
-  }
-
-  function pause() {
-    if (!isRunning) return;
-    isRunning = false;
-    workers.forEach((w) => w.terminate());
-    workers = [];
-    statusEl.textContent = '一時停止中';
-    startBtn.disabled = false;
-    pauseBtn.disabled = true;
-    updateDisplay();
-    if (staleTimer) { clearInterval(staleTimer); staleTimer = null; }
-  }
-
-  function reset() {
-    pause();
-    state = {
-      nextChunkStart: DEFAULT_START.toString(),
-      processedCount: '0',
-      cumulativeElapsedMs: 0
-    };
-    cumulativeElapsedMs = 0;
-    lastUpdateTime = null;
-    saveState();
-    updateDisplay();
-    rateEl.textContent = '-';
-    lastUpdateEl.textContent = '-';
-    statusEl.textContent = '停止中';
-    anomalyEl.style.display = 'none';
-  }
-
-  startBtn.addEventListener('click', start);
-  pauseBtn.addEventListener('click', pause);
-  resetBtn.addEventListener('click', reset);
-
-  updateDisplay();
-})();
-
-// ---- 統計的優先探索モード(案4: Tao(2019)の密度定理を踏まえたサンプリング) ----
-(function () {
-  const STORAGE_KEY = 'collatzSamplingProgress';
-  const DIGIT_THRESHOLD = 22;
-  const JUMP_BITS = 20;
-  const MIN_DIGITS = 23;
-  const MAX_DIGITS = 60;
-  const TOP_K = 2000; // リスクスコア上位何件の剰余類を候補にするか
-  const SAMPLE_BATCH = 300; // 1バッチあたりのサンプル数
-  const NUM_WORKERS = Math.max(1, Math.min(navigator.hardwareConcurrency || 4, 8));
-
-  const startBtn = document.getElementById('sample-start-btn');
-  const pauseBtn = document.getElementById('sample-pause-btn');
-  const resetBtn = document.getElementById('sample-reset-btn');
-  const statusEl = document.getElementById('sample-status');
-  const countEl = document.getElementById('sample-count');
-  const rateEl = document.getElementById('sample-rate');
-  const maxStepsEl = document.getElementById('sample-maxsteps');
-  const currentEl = document.getElementById('sample-current');
-  const digitsEl = document.getElementById('sample-digits');
-  const anomalyEl = document.getElementById('sample-anomaly');
-
-  // mod 2^JUMP_BITS のジャンプテーブル(網羅モードと同じ構築法)。
-  function buildJumpTable() {
-    const size = 1 << JUMP_BITS;
-    const a = new Uint32Array(size);
-    const c = new Uint32Array(size);
-    const baseA = 1 << JUMP_BITS;
-    for (let r = 0; r < size; r++) {
-      let cc = r, aa = baseA;
-      for (let t = 0; t < JUMP_BITS; t++) {
-        if (cc % 2 === 0) { cc = cc / 2; aa = aa / 2; }
-        else { cc = 3 * cc + 1; aa = 3 * aa; }
-      }
-      a[r] = aa;
-      c[r] = cc;
-    }
-    return { a, c };
-  }
-
-  // リスクスコア = a[r] / 2^JUMP_BITS (JUMP_BITSステップ進めたときの成長率)。
-  // 1に近い/大きいほど「なかなか縮まない」統計的にリスクの高い剰余類とみなし、
-  // 奇数の剰余のみを対象に上位TOP_K件を重み付きサンプリング候補とする。
-  function buildRiskList(table) {
-    const size = table.a.length;
-    const baseA = size;
-    const entries = [];
-    for (let r = 1; r < size; r += 2) {
-      entries.push([r, table.a[r] / baseA]);
-    }
-    entries.sort((x, y) => y[1] - x[1]);
-    const top = entries.slice(0, Math.min(TOP_K, entries.length));
-    const residues = new Uint32Array(top.length);
-    const cumWeights = new Float64Array(top.length);
-    let cum = 0;
-    for (let i = 0; i < top.length; i++) {
-      residues[i] = top[i][0];
-      cum += Math.max(top[i][1], 0.01);
-      cumWeights[i] = cum;
-    }
-    return { residues, cumWeights, total: cum };
-  }
-
-  const workerSrc = `
-    const JUMP_BITS = ${JUMP_BITS};
-    const THRESHOLD = 10n ** ${DIGIT_THRESHOLD}n;
-    const MIN_DIGITS = ${MIN_DIGITS};
-    const MAX_DIGITS = ${MAX_DIGITS};
-    const STEP_GUARD = 2000000;
-    const MASK = (1n << BigInt(JUMP_BITS)) - 1n;
-    let jumpA = null, jumpC = null, residues = null, cumWeights = null, total = 0;
-
-    function jumpStep(v) {
-      const r = Number(v & MASK);
-      const m = v >> BigInt(JUMP_BITS);
-      return BigInt(jumpA[r]) * m + BigInt(jumpC[r]);
-    }
-
-    // サンプリングは昇順の網羅性を前提にしないため、
-    // 「自分より小さい値まで下がれば良い」ショートカットは使えず、
-    // 必ず真の検証済み閾値(22桁)まで下がることを確認する。
-    function testOneAbsolute(n) {
-      let v = n;
-      let steps = 0;
-      while (v >= THRESHOLD) {
-        v = jumpStep(v);
-        steps += JUMP_BITS;
-        if (steps > STEP_GUARD) return { anomaly: true, steps };
-      }
-      return { anomaly: false, steps };
-    }
-
-    function pickResidue() {
-      const target = Math.random() * total;
-      let lo = 0, hi = cumWeights.length - 1;
-      while (lo < hi) {
-        const mid = (lo + hi) >> 1;
-        if (cumWeights[mid] < target) lo = mid + 1; else hi = mid;
-      }
-      return residues[lo];
-    }
-
-    function randomBigIntWithBits(bits) {
-      const bytes = Math.ceil(bits / 8);
-      let hex = '';
-      for (let i = 0; i < bytes; i++) hex += Math.floor(Math.random() * 256).toString(16).padStart(2, '0');
-      let v = BigInt('0x' + (hex || '0'));
-      v &= (1n << BigInt(bits)) - 1n;
-      v |= (1n << BigInt(bits - 1)); // 桁数(ビット長)を安定させるため最上位ビットを立てる
-      return v;
-    }
-
-    function sampleOne() {
-      const r = BigInt(pickResidue());
-      const digits = MIN_DIGITS + Math.floor(Math.random() * (MAX_DIGITS - MIN_DIGITS + 1));
-      const bits = Math.max(Math.ceil(digits * Math.log2(10)) - JUMP_BITS, 1);
-      const m = randomBigIntWithBits(bits);
-      let n = r + m * (1n << BigInt(JUMP_BITS));
-      if (n % 2n === 0n) n += 1n;
-      if (n < THRESHOLD) n += THRESHOLD;
-      return n;
-    }
-
-    self.onmessage = (e) => {
-      const msg = e.data;
-      if (msg.type === 'init') {
-        jumpA = new Uint32Array(msg.a);
-        jumpC = new Uint32Array(msg.c);
-        residues = new Uint32Array(msg.residues);
-        cumWeights = new Float64Array(msg.cumWeights);
-        total = msg.total;
-        self.postMessage({ type: 'ready' });
-        return;
-      }
-      if (msg.type !== 'batch') return;
-      const t0 = Date.now();
-      try {
-        let maxSteps = 0;
-        let lastN = null;
-        for (let i = 0; i < msg.count; i++) {
-          const n = sampleOne();
-          lastN = n;
-          const result = testOneAbsolute(n);
-          if (result.anomaly) {
-            self.postMessage({ type: 'anomaly', value: n.toString(), steps: result.steps });
-            return;
-          }
-          if (result.steps > maxSteps) maxSteps = result.steps;
-        }
-        self.postMessage({
-          type: 'batchDone',
-          processed: msg.count,
-          lastValue: lastN.toString(),
-          maxSteps,
-          batchTimeMs: Date.now() - t0
-        });
-      } catch (err) {
-        self.postMessage({ type: 'error', message: String(err && err.stack || err) });
-      }
-    };
-  `;
-
-  let workers = [];
-  let jumpTable = null;
-  let riskList = null;
-  let isRunning = false;
-  let cumulativeElapsedMs = 0;
-  let sampleCount = 0n;
-
-  function loadState() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed.sampleCount === 'string' && /^[0-9]+$/.test(parsed.sampleCount)) {
-          sampleCount = BigInt(parsed.sampleCount);
-        }
-        if (parsed && typeof parsed.cumulativeElapsedMs === 'number' && parsed.cumulativeElapsedMs >= 0) {
-          cumulativeElapsedMs = parsed.cumulativeElapsedMs;
-        }
-      }
-    } catch (e) { /* ignore corrupt state */ }
-  }
-
-  function saveState() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({
-      sampleCount: sampleCount.toString(),
-      cumulativeElapsedMs
-    }));
-  }
-
-  function updateDisplay() {
-    countEl.textContent = sampleCount.toLocaleString();
-    const rate = cumulativeElapsedMs > 0 ? (Number(sampleCount) / (cumulativeElapsedMs / 1000)) : 0;
-    rateEl.textContent = rate > 0 ? `${rate.toFixed(1)} 件/秒` : '-';
-  }
-
-  function handleAnomaly(msg) {
-    isRunning = false;
-    workers.forEach((w) => w.terminate());
-    workers = [];
-    statusEl.textContent = '要確認(異常検知)';
-    startBtn.disabled = false;
-    pauseBtn.disabled = true;
-    anomalyEl.style.display = 'block';
-    anomalyEl.textContent = `値 ${msg.value} が ${msg.steps} ステップ経過しても22桁未満に下がりませんでした。反例の可能性があるため自動停止しました。手動で確認してください。`;
-  }
-
-  function replaceWorker(deadWorker) {
-    const idx = workers.indexOf(deadWorker);
-    if (idx !== -1) workers.splice(idx, 1);
-    try { deadWorker.terminate(); } catch (e) { /* already dead */ }
-    if (!isRunning) return;
-    workers.push(createWorker());
-  }
-
-  function createWorker() {
-    const blob = new Blob([workerSrc], { type: 'application/javascript' });
-    const w = new Worker(URL.createObjectURL(blob));
-    w.onmessage = (e) => {
-      const msg = e.data;
-      if (msg.type === 'ready') {
-        requestBatch(w);
-      } else if (msg.type === 'batchDone') {
-        sampleCount += BigInt(msg.processed);
-        cumulativeElapsedMs += msg.batchTimeMs;
-        currentEl.textContent = msg.lastValue;
-        digitsEl.textContent = msg.lastValue.length;
-        maxStepsEl.textContent = msg.maxSteps.toLocaleString();
-        saveState();
-        updateDisplay();
-        requestBatch(w);
-      } else if (msg.type === 'anomaly') {
-        handleAnomaly(msg);
-      } else if (msg.type === 'error') {
-        console.error('Worker sample error, retrying:', msg.message);
-        replaceWorker(w);
-      }
-    };
-    w.onerror = (err) => {
-      console.error('Worker crashed, retrying:', err.message);
-      err.preventDefault && err.preventDefault();
-      replaceWorker(w);
-    };
-    const aCopy = jumpTable.a.slice();
-    const cCopy = jumpTable.c.slice();
-    w.postMessage({
-      type: 'init',
-      a: aCopy.buffer,
-      c: cCopy.buffer,
-      residues: riskList.residues.buffer.slice(0),
-      cumWeights: riskList.cumWeights.buffer.slice(0),
-      total: riskList.total
-    }, [aCopy.buffer, cCopy.buffer]);
-    return w;
-  }
-
-  function requestBatch(worker) {
-    if (!isRunning) return;
-    worker.postMessage({ type: 'batch', count: SAMPLE_BATCH });
-  }
-
-  function start() {
-    if (isRunning) return;
-    if (!jumpTable) jumpTable = buildJumpTable();
-    if (!riskList) riskList = buildRiskList(jumpTable);
-    isRunning = true;
-    statusEl.textContent = `実行中(${NUM_WORKERS}並列)`;
-    startBtn.disabled = true;
-    pauseBtn.disabled = false;
-    anomalyEl.style.display = 'none';
-    if (workers.length === 0) {
-      for (let i = 0; i < NUM_WORKERS; i++) workers.push(createWorker());
-    }
-    updateDisplay();
-  }
-
-  function pause() {
-    if (!isRunning) return;
-    isRunning = false;
-    workers.forEach((w) => w.terminate());
-    workers = [];
-    statusEl.textContent = '一時停止中';
-    startBtn.disabled = false;
-    pauseBtn.disabled = true;
-    updateDisplay();
-  }
-
-  function reset() {
-    pause();
-    sampleCount = 0n;
-    cumulativeElapsedMs = 0;
-    saveState();
-    updateDisplay();
-    rateEl.textContent = '-';
-    maxStepsEl.textContent = '-';
-    currentEl.textContent = '-';
-    digitsEl.textContent = '-';
-    statusEl.textContent = '停止中';
-    anomalyEl.style.display = 'none';
-  }
-
-  startBtn.addEventListener('click', start);
-  pauseBtn.addEventListener('click', pause);
-  resetBtn.addEventListener('click', reset);
-
-  loadState();
-  updateDisplay();
-})();
 </script>
 </body>
 </html>
